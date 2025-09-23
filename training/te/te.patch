@@ -1,0 +1,240 @@
+diff -Naur '--exclude=*pycache*' transformer_engine/pytorch/module/grouped_linear.py transformer_engine_patch/pytorch/module/grouped_linear.py
+--- transformer_engine/pytorch/module/grouped_linear.py	2025-08-05 16:17:40.000000000 +0800
++++ transformer_engine_patch/pytorch/module/grouped_linear.py	2025-09-01 16:45:31.217725478 +0800
+@@ -11,6 +11,8 @@
+ 
+ import transformer_engine_torch as tex
+ 
++from transformer_engine.pytorch.tensor.float8_blockwise_tensor import get_columnwise_fp8_tensor, _on_demand_fp8_weight_t_creation
++
+ from transformer_engine.common.recipe import Recipe
+ from .base import (
+     get_multi_stream_cublas_workspace,
+@@ -109,7 +111,7 @@
+                 )
+             if weight_quantizers[0] is not None:
+                 for weight_quantizer in weight_quantizers:
+-                    weight_quantizer.set_usage(rowwise=True, columnwise=columnwise_usage)
++                    weight_quantizer.set_usage(rowwise=True, columnwise=columnwise_usage and not _on_demand_fp8_weight_t_creation)
+         if output_quantizers[0] is not None:
+             for output_quantizer in output_quantizers:
+                 output_quantizer.set_usage(rowwise=True, columnwise=False)
+@@ -206,7 +208,7 @@
+                 inputmats = [None] * num_gemms
+             if inp.requires_grad:
+                 for weight in weights_fp8:
+-                    if isinstance(weight, QuantizedTensorBase):
++                    if isinstance(weight, QuantizedTensorBase) and not _on_demand_fp8_weight_t_creation:
+                         weight.update_usage(columnwise_usage=True)
+ 
+             tensors_to_save, tensor_objects = prepare_for_saving(
+@@ -337,14 +339,19 @@
+                     device=ctx.device,
+                 )
+ 
++                columnwise_weights = []
+                 for weight, quantizer in zip(weights, ctx.weight_quantizers):
+                     if quantizer is not None and isinstance(weight, QuantizedTensorBase):
+-                        weight.update_usage(
+-                            rowwise_usage=quantizer.rowwise_usage,
+-                            columnwise_usage=quantizer.columnwise_usage,
+-                        )
++                        if _on_demand_fp8_weight_t_creation:
++                            columnwise_weight = get_columnwise_fp8_tensor(weight)
++                            columnwise_weights.append(columnwise_weight)
++                        else:
++                            weight.update_usage(
++                                rowwise_usage=quantizer.rowwise_usage,
++                                columnwise_usage=quantizer.columnwise_usage,
++                            )
+                 general_grouped_gemm(
+-                    weights,
++                    columnwise_weights if _on_demand_fp8_weight_t_creation else weights,
+                     grad_output,
+                     [dgrad],
+                     ctx.activation_dtype,
+@@ -659,6 +666,10 @@
+ 
+         if self.primary_weights_in_fp8:
+             self.init_fp8_metadata(num_gemms=self.num_gemms)
++            if _on_demand_fp8_weight_t_creation:
++                # set weight quantizers to disable columnwise_usage
++                for i in range(self.num_gemms):
++                    self.quantizers['scaling_fwd'][self._offsets["weight"] + i * self._num_fp8_tensors_per_gemm["fwd"]].columnwise_usage = False
+ 
+         self.reset_parameters(defer_init=device == "meta")
+ 
+diff -Naur '--exclude=*pycache*' transformer_engine/pytorch/module/layernorm_linear.py transformer_engine_patch/pytorch/module/layernorm_linear.py
+--- transformer_engine/pytorch/module/layernorm_linear.py	2025-08-05 16:17:40.000000000 +0800
++++ transformer_engine_patch/pytorch/module/layernorm_linear.py	2025-09-01 15:07:34.381414626 +0800
+@@ -75,6 +75,8 @@
+     general_gemm,
+ )
+ 
++from transformer_engine.pytorch.tensor.float8_blockwise_tensor import get_columnwise_fp8_tensor, _on_demand_fp8_weight_t_creation
++
+ __all__ = ["LayerNormLinear"]
+ 
+ 
+@@ -272,7 +274,7 @@
+ 
+             # Configure quantizer
+             if weight_quantizer is not None:
+-                weight_quantizer.set_usage(rowwise=True, columnwise=is_grad_enabled)
++                weight_quantizer.set_usage(rowwise=True, columnwise=(is_grad_enabled and _on_demand_fp8_weight_t_creation is False))
+ 
+             # Get quantized weight
+             update_workspace = is_first_microbatch is None or is_first_microbatch
+@@ -401,7 +403,7 @@
+                         ln_out.update_usage(rowwise_usage=False)
+ 
+             # Weight with column-wise usage is needed for dgrad GEMM.
+-            if isinstance(weightmat, QuantizedTensorBase):
++            if isinstance(weightmat, QuantizedTensorBase) and not _on_demand_fp8_weight_t_creation:
+                 weightmat.update_usage(columnwise_usage=True)
+ 
+             if cpu_offloading:
+@@ -675,7 +677,10 @@
+             if isinstance(grad_output, QuantizedTensorBase):
+                 grad_output.update_usage(rowwise_usage=True)
+             if ctx.weight_quantizer is not None and isinstance(weight, QuantizedTensorBase):
+-                weight.update_usage(columnwise_usage=True)
++                if _on_demand_fp8_weight_t_creation:
++                    weight = get_columnwise_fp8_tensor(weight)
++                else:
++                    weight.update_usage(columnwise_usage=True)
+ 
+             # Choose whether to use GEMM kernel with split accumulator
+             use_split_accumulator = _2X_ACC_DGRAD
+@@ -1364,6 +1369,10 @@
+ 
+         if with_fp8_params:
+             self.init_fp8_metadata()
++            if _on_demand_fp8_weight_t_creation:
++                # set weight quantizer columnwise_usage to False
++                self.quantizers["scaling_fwd"][tex.FP8FwdTensors.GEMM1_WEIGHT].columnwise_usage = False
++
+ 
+         self.reset_parameters(defer_init=device == "meta")
+ 
+diff -Naur '--exclude=*pycache*' transformer_engine/pytorch/module/linear.py transformer_engine_patch/pytorch/module/linear.py
+--- transformer_engine/pytorch/module/linear.py	2025-08-05 16:17:40.000000000 +0800
++++ transformer_engine_patch/pytorch/module/linear.py	2025-09-01 15:13:32.604550396 +0800
+@@ -70,6 +70,8 @@
+ from ...debug.pytorch.debug_state import TEDebugState
+ from ...debug.pytorch.utils import any_feature_enabled
+ 
++from transformer_engine.pytorch.tensor.float8_blockwise_tensor import get_columnwise_fp8_tensor, _on_demand_fp8_weight_t_creation
++
+ __all__ = ["Linear"]
+ 
+ 
+@@ -236,7 +238,7 @@
+                         is_fp8_activation_recompute_enabled()
+                         and not in_fp8_activation_recompute_phase()
+                     )
+-                weight_quantizer.set_usage(rowwise=True, columnwise=columnwise_usage)
++                weight_quantizer.set_usage(rowwise=True, columnwise=columnwise_usage and not _on_demand_fp8_weight_t_creation)
+ 
+             # Get quantized weight
+             update_workspace = is_first_microbatch is None or is_first_microbatch
+@@ -372,7 +374,7 @@
+ 
+             # Weight with column-wise usage is needed for dgrad GEMM.
+             if inp.requires_grad:
+-                if isinstance(weightmat, QuantizedTensorBase):
++                if isinstance(weightmat, QuantizedTensorBase) and not _on_demand_fp8_weight_t_creation:
+                     weightmat.update_usage(columnwise_usage=True)
+ 
+             if cpu_offloading and saved_inputmat is not None:
+@@ -646,7 +648,10 @@
+                 if isinstance(grad_output, QuantizedTensorBase):
+                     grad_output.update_usage(rowwise_usage=True)
+                 if ctx.weight_quantizer is not None and isinstance(weight_fp8, QuantizedTensorBase):
+-                    weight_fp8.update_usage(columnwise_usage=True)
++                    if _on_demand_fp8_weight_t_creation:
++                        weight_fp8 = get_columnwise_fp8_tensor(weight_fp8)
++                    else:
++                        weight_fp8.update_usage(columnwise_usage=True)
+ 
+                 # Choose whether to use GEMM kernel with split accumulator
+                 use_split_accumulator = _2X_ACC_DGRAD
+@@ -1260,6 +1265,9 @@
+ 
+         if with_fp8_params:
+             self.init_fp8_metadata()
++            if _on_demand_fp8_weight_t_creation:
++                # set weight quantizer columnwise_usage to False
++                self.quantizers['scaling_fwd'][tex.FP8FwdTensors.GEMM1_WEIGHT].columnwise_usage = False
+ 
+         self.reset_parameters(defer_init=device == "meta")
+ 
+diff -Naur '--exclude=*pycache*' transformer_engine/pytorch/tensor/float8_blockwise_tensor.py transformer_engine_patch/pytorch/tensor/float8_blockwise_tensor.py
+--- transformer_engine/pytorch/tensor/float8_blockwise_tensor.py	2025-07-08 17:29:38.000000000 +0800
++++ transformer_engine_patch/pytorch/tensor/float8_blockwise_tensor.py	2025-09-01 10:47:21.304574461 +0800
+@@ -6,6 +6,10 @@
+ from __future__ import annotations
+ from typing import Optional, Tuple, Iterable, Union
+ 
++import os
++import triton
++import triton.language as tl
++
+ import math
+ import torch
+ import transformer_engine_torch as tex
+@@ -798,3 +802,54 @@
+             )
+             return dgrad, None
+         return grad.view(ctx.shape), None
++
++@triton.jit
++def block_transpose_kernel(x_ptr, t_ptr, M, N, H: tl.constexpr, W: tl.constexpr, EVEN: tl.constexpr):
++    rid = tl.program_id(axis=0)
++    cid = tl.program_id(axis=1)
++    offs = rid*H*N + cid*W + tl.arange(0, H)[:,None]*N + tl.arange(0, W)[None,:] 
++    toffs = rid*H + cid*M*W + tl.arange(0, W)[:,None]*M + tl.arange(0, H)[None,:]
++    if EVEN:
++        y = tl.trans(tl.load(x_ptr+offs))
++        tl.store(t_ptr+toffs, y)
++    else:
++        y = tl.trans(tl.load(x_ptr+offs, mask=(cid*W+tl.arange(0, W)[None,:] < N) & (rid*H+tl.arange(0, H)[:,None] < M) ))
++        tl.store(t_ptr+toffs, y, mask=(cid*W+tl.arange(0, W)[:,None] < N) & (rid*H+tl.arange(0, H)[None,:] < M))
++
++def triton_block_transpose(x):
++    M, N = x.shape
++    device = x.device
++    t = torch.empty((N, M),device=device,dtype=x.dtype) 
++    H = 64
++    W = 32 if x.dtype.itemsize == 1 else 16
++    EVEN = M%H == 0 and N%W == 0
++    num_stages = 5
++    num_warps = 2
++    grid = lambda META: (triton.cdiv(M,H), triton.cdiv(N,W))
++    block_transpose_kernel[grid](
++        x, t,
++        M, N,
++        H, W,
++        EVEN,
++        num_stages=num_stages,
++        num_warps=num_warps
++    )
++    return t
++
++def get_columnwise_fp8_tensor(rowwise_tensor, requires_grad=False):
++    columnwise_scale_inv = rowwise_tensor._rowwise_scale_inv.transpose(-2, -1).contiguous()
++    columnwise_data = triton_block_transpose(rowwise_tensor._rowwise_data)
++    return Float8BlockwiseQTensor(
++        shape=rowwise_tensor.shape,
++        dtype=rowwise_tensor.dtype,
++        fp8_dtype=rowwise_tensor._fp8_dtype,
++        rowwise_data=None,
++        rowwise_scale_inv=None,
++        columnwise_data=columnwise_data,
++        columnwise_scale_inv=columnwise_scale_inv,
++        quantizer=rowwise_tensor._quantizer,
++        is_2D_scaled=True,
++        requires_grad=requires_grad,
++    )
++
++_on_demand_fp8_weight_t_creation = int(os.getenv("TE_ON_DEMAND_FP8_WEIGHT_T_CREATION", 0)) > 0

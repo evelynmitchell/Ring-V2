@@ -1,0 +1,2742 @@
+diff --git a/examples/post_training/modelopt/conf/arguments.sh b/examples/post_training/modelopt/conf/arguments.sh
+index 19d2d945f..80b977332 100644
+--- a/examples/post_training/modelopt/conf/arguments.sh
++++ b/examples/post_training/modelopt/conf/arguments.sh
+@@ -1,4 +1,5 @@
+ MLM_MODEL_CFG=$1
++MLM_MODEL_CFG=moe-mini-v2/moe_mini_v2
+ 
+ # Bash coloring
+ RED='\033[0;31m'
+@@ -49,7 +50,7 @@ if [ -z ${TP} ]; then
+ fi
+ 
+ if [ -z ${EP} ]; then
+-    EP=1
++    EP=8
+     printf "${MLM_WARNING} Variable ${PURPLE}EP${WHITE} not set! (default: ${EP})\n"
+ fi
+ 
+diff --git a/examples/post_training/modelopt/conf/moe-mini-v2/moe_mini_v2.sh b/examples/post_training/modelopt/conf/moe-mini-v2/moe_mini_v2.sh
+new file mode 100644
+index 000000000..5c53a9381
+--- /dev/null
++++ b/examples/post_training/modelopt/conf/moe-mini-v2/moe_mini_v2.sh
+@@ -0,0 +1,83 @@
++
++MODEL_ARGS=" \
++    --save-interval 200 \
++    --micro-batch-size 1 \
++    --global-batch-size 8 \
++    --seq-length "8192" \
++    --weight-decay 0.1 \
++    --adam-beta1 0.9 \
++    --adam-beta2 0.95 \
++    --init-method-std 0.02 \
++    --clip-grad 1.0 \
++    --bf16 \
++    --lr "1.0e-6" \
++    --lr-decay-style constant \
++    --min-lr "1.0e-6" \
++    --lr-warmup-iters 0 \
++    --seed 42 \
++    --moe-enable-deepep \
++    --expert-model-parallel-size 8 \
++    --expert-tensor-parallel-size 1 \
++    --moe-grouped-gemm \
++    --moe-token-dispatcher-type flex \
++    --moe-router-dtype fp32 \
++    --num-experts 256 \
++    --moe-ffn-hidden-size 512 \
++    --moe-shared-expert-intermediate-size 512 \
++    --moe-router-score-function sigmoid \
++    --moe-router-topk 8 \
++    --moe-router-enable-expert-bias \
++    --moe-router-topk-scaling-factor 2.5 \
++    --moe-router-num-groups 8 \
++    --moe-router-group-topk 4 \
++    --moe-router-load-balancing-type aux_loss \
++    --moe-z-loss-coeff 0.0000035 \
++    --moe-router-bias-update-rate 1e-3 \
++    --moe-layer-freq [0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1] \
++    --num-layers 20 \
++    --hidden-size 2048 \
++    --ffn-hidden-size 5120 \
++    --num-attention-heads 16 \
++    --num-query-groups 4 \
++    --group-query-attention \
++    --qk-layernorm \
++    --use-flash-attn \
++    --max-position-embeddings 8192 \
++    --vocab-size 157184 \
++    --make-vocab-size-divisible-by 128 \
++    --position-embedding-type "rope" \
++    --rotary-base 10000 \
++    --rotary-percent 0.5 \
++    --rotary-scaling-factor 40 \
++    --swiglu \
++    --untie-embeddings-and-output-weights \
++    --normalization "RMSNorm" \
++    --norm-epsilon "1e-06" \
++    --disable-bias-linear \
++    --transformer-impl "transformer_engine" \
++    --attention-dropout 0 \
++    --hidden-dropout 0 \
++
++    --pipeline-model-parallel-size 1 \
++    --tensor-model-parallel-size 1 \
++    --sequence-parallel \
++    --use-distributed-optimizer \
++    --overlap-param-gather \
++    --overlap-grad-reduce \
++
++    --finetune-hf-dataset train_data \
++    --train-data-path  /to/your/path/xxx.jsonl \
++    --valid-data-path  /to/your/path/xxx.jsonl \
++    --test-data-path   /to/your/path/xxx.jsonl \
++    --tokenizer-type "SFTTokenizer" \
++    --split 949,50,1 \
++    --dataloader-type "single" \
++    --no-create-attention-mask-in-dataloader \
++
++    --attention-backend auto \
++    --no-masked-softmax-fusion \
++    --attention-softmax-in-fp32	\
++    --cross-entropy-loss-fusion \
++
++    --log-interval 1
++"
+\ No newline at end of file
+diff --git a/examples/post_training/modelopt/finetune.py b/examples/post_training/modelopt/finetune.py
+index ac373296e..66971ddff 100755
+--- a/examples/post_training/modelopt/finetune.py
++++ b/examples/post_training/modelopt/finetune.py
+@@ -3,17 +3,24 @@
+ """Supervised Finetuning GPT."""
+ import itertools
+ import os
++import random
+ import sys
++from abc import abstractmethod, ABC
++from dataclasses import dataclass, field
++from enum import Enum, unique
+ from functools import partial
+-from typing import Any, Dict, Optional
++from typing import Any, Dict, Optional, Sequence, Union, List, Tuple, Literal, Set
+ 
+ import jsonlines
++import numpy as np
++
+ 
+ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../")))
+ 
+ import datasets
+ import torch
+ import transformers
++from megatron.post_training.bailing_sft_utils import get_input_ids_and_labels_for_sft
+ 
+ from megatron.core import mpu, tensor_parallel
+ from megatron.core.enums import ModelType
+@@ -30,21 +37,30 @@ from megatron.training.utils import (
+     unwrap_model,
+ )
+ 
++from megatron.training.tokenizer.bailing_sft_tokenizer import _GLMMegatronTokenizer
++
+ REMOVE_THINK_CHAT_TEMPLATE = (
+     "{% if '</think>' in content %}{% set content = content.split('</think>')[-1] %}{% endif %}"
+ )
+ 
++@dataclass
++class FlexibleVPPConfig:
++    pipeline_model_parallel_layout = None
++    mtp_num_layers = None
+ 
+-def get_eos_id():
+-    tokenizer = get_tokenizer()
+-    hf_tokenizer = tokenizer._tokenizer
++# def get_eos_id():
++#     tokenizer = get_tokenizer()
++#     hf_tokenizer = tokenizer._tokenizer
++
++#     if hf_tokenizer.eos_token == "<|eot_id|>":
++#         return 128001
++#     if hf_tokenizer.eos_token == "<|eot|>":
++#         return 200001
++
++#     return hf_tokenizer.eos_token_id
+ 
+-    if hf_tokenizer.eos_token == "<|eot_id|>":
+-        return 128001
+-    if hf_tokenizer.eos_token == "<|eot|>":
+-        return 200001
+ 
+-    return hf_tokenizer.eos_token_id
++IGNORE_INDEX = -100
+ 
+ 
+ class SFTDataset(torch.utils.data.Dataset):
+@@ -85,7 +101,7 @@ class SFTDataset(torch.utils.data.Dataset):
+         self,
+         num_packed_samples: int,
+         data_path: Optional[str],
+-        tokenizer: transformers.PreTrainedTokenizerBase,
++        tokenizer: _GLMMegatronTokenizer,
+         seq_length: int,
+         hf_dataset: Optional[str] = None,
+         num_medusa_heads: int = 0,
+@@ -109,8 +125,8 @@ class SFTDataset(torch.utils.data.Dataset):
+             num_medusa_heads: number of medusa heads will incease the sample sequence
+                 length for training additional medusa prediction heads
+         """
+-        if not isinstance(tokenizer, transformers.PreTrainedTokenizerBase):
+-            raise ValueError("SFTDataset only supports transformers.PreTrainedTokenizerBase!")
++        # if not isinstance(tokenizer, transformers.PreTrainedTokenizerBase):
++        #     raise ValueError("SFTDataset only supports transformers.PreTrainedTokenizerBase!")
+ 
+         self.num_packed_samples = num_packed_samples
+         self.data_path = data_path
+@@ -126,16 +142,23 @@ class SFTDataset(torch.utils.data.Dataset):
+ 
+         # [WAR]: For DeepSeek-V3/R1 tokenizer, we modify the chat_template such that the <think>
+         # tokens are preserved for supervised learning.
+-        self.tokenizer.chat_template = self.tokenizer.chat_template.replace(
+-            REMOVE_THINK_CHAT_TEMPLATE, ""
+-        )
++        # self.tokenizer.chat_template = self.tokenizer.chat_template.replace(
++        #     REMOVE_THINK_CHAT_TEMPLATE, ""
++        # )
+ 
+         if data_path is not None:
+             if data_path.endswith(".json"):
++                import json
+                 self._raw_samples = json.load(open(data_path))
+             elif data_path.endswith(".jsonl"):
+                 with jsonlines.open(data_path, mode='r') as reader:
+                     self._raw_samples = [obj for obj in reader]
++                    num_samples = len(self._raw_samples) // self.num_shards
++                    remainder = len(self._raw_samples) % self.num_shards
++                    start = self.shard_index * num_samples + min(self.shard_index, remainder)
++                    end = start + num_samples + (1 if self.shard_index < remainder else 0)
++                    self._raw_samples = self._raw_samples[start: end]
++                    random.shuffle(self._raw_samples)
+             else:
+                 raise ValueError("data_path must be json or jsonl")
+         elif self.hf_dataset is not None:
+@@ -161,15 +184,17 @@ class SFTDataset(torch.utils.data.Dataset):
+         else:
+             raise ValueError("Either hf_dataset or data_path must be provided!")
+ 
+-        if self.tokenizer.chat_template is None:
+-            self.tokenizer.chat_template = SFTDataset.hf_dataset_to_prompt_template
+-        elif self.hf_dataset is not None:
+-            self.data_transformation = SFTDataset.hf_dataset_to_conversation.get(
+-                self.hf_dataset, lambda data: data
+-            )
+-
+-        if self.tokenizer.chat_template is None:
+-            raise ValueError("No valid chat template!")
++        # if self.tokenizer.chat_template is None:
++        #     self.tokenizer.chat_template = SFTDataset.hf_dataset_to_prompt_template
++        # elif self.hf_dataset is not None:
++        #     self.data_transformation = SFTDataset.hf_dataset_to_conversation.get(
++        #         self.hf_dataset, lambda data: data
++        #     )
++        self.data_transformation = SFTDataset.hf_dataset_to_conversation.get(
++            self.hf_dataset, lambda data: data
++        )
++        # if self.tokenizer.chat_template is None:
++        #     raise ValueError("No valid chat template!")
+ 
+     def __len__(self):
+         return self.num_packed_samples
+@@ -201,11 +226,19 @@ class SFTDataset(torch.utils.data.Dataset):
+                     ),
+                     flush=True,
+                 )
++        if idx > 0 and (idx % len(self.indexed_dataset) == 0):
++            print(f'shard_index:{self.shard_index},epoch:{idx//len(self.indexed_dataset)},packed_sample_idx:{idx},indexed_dataset_len:{len(self.indexed_dataset)},num_packed_samples:{self.num_packed_samples}')
+ 
+         idx = idx % len(self.indexed_dataset)
+         torch_sample = {}
+         for key, val in self.indexed_dataset[idx].items():
+             torch_sample[key] = torch.LongTensor(val)
++
++        # drop最后一个不完整样本
++        if int(torch_sample['token_count'].sum()) > self.seq_length:
++            last_len = int(torch_sample['token_count'][-1])
++            torch_sample['loss_mask'][-last_len:] = 0
++            torch_sample['input_ids'][-last_len:] = self.tokenizer.pad
+         return torch_sample
+ 
+     def _process_and_pack_example(self):
+@@ -218,12 +251,24 @@ class SFTDataset(torch.utils.data.Dataset):
+             if self._raw_sample_index >= len(self._raw_samples):
+                 return None
+             raw_sample = self._raw_samples[self._raw_sample_index]
+-            self._raw_sample_index += 1
+-            processed_sample = self._process_example(raw_sample)
+-            if processed_sample is not None:
+-                current_packed_samples.append(processed_sample)
+-                current_packed_samples_token_count += processed_sample["token_count"]
+ 
++            processed_sample = self._process_example(raw_sample)
++            if current_packed_samples_token_count + processed_sample["token_count"] > required_packed_tokens:
++                # this sample should be add in next packed_sample
++                if processed_sample is not None and current_packed_samples_token_count>0:
++                    current_packed_samples.append(processed_sample)
++                    current_packed_samples_token_count += processed_sample["token_count"]
++                if processed_sample is not None and current_packed_samples_token_count == 0:
++                    # data overlong seq len, ignore it
++                    self._raw_sample_index += 1
++                    print(f'ignore samples longer than seq-length')
++            else:
++                self._raw_sample_index += 1
++                if processed_sample is not None:
++                    current_packed_samples.append(processed_sample)
++                    current_packed_samples_token_count += processed_sample["token_count"]
++            if self._raw_sample_index >= len(self._raw_samples) and len(self.indexed_dataset)==0:
++                raise Exception('too much data overlong seq-length.')
+         packed_samples = {}
+ 
+         for key in ['input_ids', 'loss_mask']:
+@@ -248,11 +293,11 @@ class SFTDataset(torch.utils.data.Dataset):
+         # 2. Otherwise, the tokenizer must have a default chat template and we are either
+         #    converting the ShareGPT chat data or standard SFT data to OpenAI chat data.
+         example = self.data_transformation(example)
+-
++        tools = example.get("tools", None)
+         # Check if this is OpenAI chat data?
+         conversations = example.get("conversations", None)
+         if conversations is None:
+-            conversations = example.get("messagess", None)
++            conversations = example.get("messages", None)
+ 
+         # We don't use the data if there is no assistant reply or the conversation that
+         # starts with the assistant.
+@@ -260,18 +305,32 @@ class SFTDataset(torch.utils.data.Dataset):
+             example = conversations
+             if len(conversations) < 2 or example[0]["role"] == "assistant":
+                 return None
+-
+         # We always add eos between samples for training purpose.
+-        input_ids = self.tokenizer.apply_chat_template(example)
+-        current_loss_mask = [1] * len(input_ids)
+-        input_ids = input_ids + [get_eos_id()]
+-        current_loss_mask += [0]
++        # input_ids = self.tokenizer.apply_chat_template(example)
++        # input_ids_v2 = self.tokenizer.tokenizer.apply_chat_template(example, tokenize=True)
++
++        system = None
++        input_ids, labels = get_input_ids_and_labels_for_sft(
++            example,
++            self.tokenizer,
++            system,
++            tools,
++            use_ture_multiturn=True,)
++        # print(f'input_ids:{self.tokenizer.tokenizer.decode(input_ids,skip_special_tokens=False)}')
++        current_loss_mask = np.array(labels[1:] + [IGNORE_INDEX])
++        current_loss_mask[current_loss_mask != IGNORE_INDEX] = 1
++        current_loss_mask[current_loss_mask == IGNORE_INDEX] = 0
++
++        # current_loss_mask = [1] * len(input_ids)
++        # input_ids = input_ids + [get_eos_id()]
++        # input_ids = input_ids + [self.tokenizer.eos_token_id]
++        # current_loss_mask += [0]
+ 
+         assert len(input_ids) == len(current_loss_mask)
+ 
+-        if len(input_ids) > self.seq_length:
+-            input_ids = input_ids[: self.seq_length]
+-            current_loss_mask = current_loss_mask[: self.seq_length]
++        # if len(input_ids) > self.seq_length:
++        #     input_ids = input_ids[: self.seq_length]
++        #     current_loss_mask = current_loss_mask[: self.seq_length]
+ 
+         processed_example = {
+             'input_ids': input_ids,
+@@ -322,15 +381,15 @@ def train_valid_test_sft_datasets_provider(train_val_test_num_samples):
+     args = get_args()
+     tokenizer = get_tokenizer()
+ 
+-    if not isinstance(tokenizer._tokenizer, transformers.PreTrainedTokenizerBase):
+-        raise ValueError("SFTDataset only supports transformers.PreTrainedTokenizerBase!")
++    # if not isinstance(tokenizer._tokenizer, transformers.PreTrainedTokenizerBase):
++    #     raise ValueError("SFTDataset only supports transformers.PreTrainedTokenizerBase!")
+ 
+     if args.micro_batch_size > 1:
+         raise ValueError("SFTDataloader only supports micro_batch_size=1.")
+ 
+     # Providing additional Medusa arguments to prepare the data
+     kwargs = {
+-        "tokenizer": tokenizer._tokenizer,
++        "tokenizer": tokenizer,
+         "seq_length": args.seq_length,
+         # Optional kwargs
+         "hf_dataset": args.finetune_hf_dataset,
+@@ -350,7 +409,12 @@ def train_valid_test_sft_datasets_provider(train_val_test_num_samples):
+     test_ds = SFTDataset(train_val_test_num_samples[2], data_path[2], **kwargs)
+ 
+     print_rank_0("> finished creating SFT datasets ...")
+-
++    # pdb_debug()
++    # for t_data in train_ds:
++    #     print(f't_data')
++        # 157151, 90827, 157152, 14136, 5381, 6350, 928, 156895, 157151, 39
++        # tokenizer.tokenizer.decode([156895, 156892],skip_special_tokens=False)
++        # tokenizer.tokenizer.decode([157151, 90827, 157152, 198, 14136, 5381, 6350, 928, 156895, 157151, 39, 116171],skip_special_tokens=False)
+     return train_ds, valid_ds, test_ds
+ 
+ 
+@@ -376,14 +440,14 @@ def get_batch(data_iterator):
+     # Unpack the data received.
+     tokens_ = data_b["input_ids"]
+     tokens = tokens_[:, 0 : 0 + args.seq_length].contiguous()
+-    labels = tokens_[:, 1 : 1 + args.seq_length].contiguous()
++    labels = tokens_[:, 1 : 1 + args.seq_length].clone().contiguous()
+     answer_only_loss_mask = data_b["loss_mask"][:, 1 : 1 + args.seq_length].contiguous()
+ 
+     # Get the masks and postition ids.
+     attention_mask, loss_mask, position_ids = get_ltor_masks_and_position_ids(
+-        tokens, get_eos_id(), args.reset_position_ids, args.reset_attention_mask, args.eod_mask_loss
++        tokens, get_tokenizer().eos_token_id, args.reset_position_ids, args.reset_attention_mask, args.eod_mask_loss
+     )
+-    loss_mask = loss_mask * answer_only_loss_mask.to(dtype=loss_mask.dtype)
++    loss_mask = data_b["loss_mask"][:, : args.seq_length]#loss_mask * answer_only_loss_mask.to(dtype=loss_mask.dtype)
+ 
+     # Medusa label and loss_mask preparation
+     #
+@@ -451,7 +515,7 @@ def get_batch(data_iterator):
+ 
+     labels = labels.contiguous()
+     loss_mask = loss_mask.contiguous()
+-
++    labels[loss_mask == 0] = IGNORE_INDEX
+     batch = {
+         "tokens": tokens,
+         "labels": labels,
+@@ -544,7 +608,8 @@ def forward_step(data_iterator, model: GPTModel):
+     timers("batch-generator", log_level=2).start()
+     tokens, labels, loss_mask, attention_mask, position_ids = get_batch(data_iterator)
+     timers("batch-generator").stop()
+-
++    position_ids = None
++    attention_mask = None
+     output_tensor = model(tokens, position_ids, attention_mask, labels=labels)
+ 
+     return output_tensor, partial(loss_func, loss_mask, model)
+@@ -557,6 +622,6 @@ if __name__ == "__main__":
+         ModelType.encoder_or_decoder,
+         forward_step,
+         extra_args_provider=add_modelopt_args,
+-        args_defaults={"tokenizer_type": "HuggingFaceTokenizer"},
++        args_defaults={"tokenizer_type": "SFTTokenizer"},
+         non_loss_data_func=non_loss_data_func,
+     )
+diff --git a/examples/post_training/modelopt/finetune.sh b/examples/post_training/modelopt/finetune.sh
+index 8ad50bc86..2b106f3de 100755
+--- a/examples/post_training/modelopt/finetune.sh
++++ b/examples/post_training/modelopt/finetune.sh
+@@ -12,31 +12,30 @@ MLM_DEFAULT_ARGS=" \
+     --export-te-mcore-model \
+     --finetune \
+ "
+-
++TENSORBOARD_LOGS_PATH=/home/admin/logs/tfevent/runs
+ 
+ if [ -z ${MLM_MODEL_SAVE} ]; then
+     MLM_MODEL_SAVE=${MLM_MODEL_CKPT}
+     printf "${MLM_WARNING} Variable ${PURPLE}MLM_MODEL_SAVE${WHITE} is not set (default: ${MLM_MODEL_CKPT})!\n"
+ fi
++echo ${MLM_MODEL_SAVE}
++echo ${MLM_MODEL_CKPT}
+ 
+ if [ -z ${MLM_DATA_ARGS} ]; then
+     MLM_DATA_ARGS=" \
+-        --train-samples 128000 \
+-        --lr-decay-samples 128000 \
++        --train-samples 6546 \
+         --lr-warmup-samples 0 \
+         --split 100,0,0 \
+-        --finetune-hf-dataset nvidia/Daring-Anteater \
++        --finetune-hf-dataset train_data \
+     "
+ fi
+ 
+ if [ -z ${MLM_TRAIN_ARGS} ]; then
+     MLM_TRAIN_ARGS=" \
+-        --recompute-activations \
+         --no-gradient-accumulation-fusion \
+         --reset-position-ids \
+         --reset-attention-mask \
+-        --eod-mask-loss \
+-        --global-batch-size 128 \
++        --global-batch-size 8 \
+         --micro-batch-size 1 \
+         --attention-dropout 0.0 \
+         --hidden-dropout 0.0 \
+@@ -46,9 +45,9 @@ fi
+ 
+ if [ -z ${MLM_OPTIM_ARGS} ]; then
+     MLM_OPTIM_ARGS=" \
+-        --lr 1.0e-5 \
+-        --min-lr 1.0e-7 \
+-        --lr-decay-style cosine \
++        --lr 1.0e-6 \
++        --min-lr 1.0e-6 \
++        --lr-decay-style constant \
+         --clip-grad 1.0 \
+         --weight-decay 0.0 \
+         --adam-beta1 0.9 \
+@@ -59,24 +58,40 @@ fi
+ 
+ if [ -z ${MLM_EVAL_ARGS} ]; then
+     MLM_EVAL_ARGS=" \
+-        --eval-iters 1 \
+-        --eval-interval 1000 \
+-        --save-interval 1000 \
+-        --log-interval 100 \
++        --save-interval 500 \
++        --tensorboard-dir $TENSORBOARD_LOGS_PATH \
++        --log-timers-to-tensorboard \
++        --log-memory-to-tensorboard \
++        --log-world-size-to-tensorboard \
++        --log-validation-ppl-to-tensorboard \
+     "
+ fi
+ 
+ ${LAUNCH_SCRIPT} ${SCRIPT_DIR}/finetune.py \
+-    ${MODEL_ARGS} \
+-    --tensor-model-parallel-size ${TP} \
+-    --expert-model-parallel-size ${EP} \
+-    --pipeline-model-parallel-size ${PP} \
+-    --tokenizer-model ${TOKENIZER_MODEL} \
+-    --load ${MLM_MODEL_CKPT} \
+-    --save ${MLM_MODEL_SAVE} \
+-    ${MLM_DATA_ARGS} \
+-    ${MLM_OPTIM_ARGS} \
+-    ${MLM_TRAIN_ARGS} \
+-    ${MLM_EVAL_ARGS} \
+-    ${MLM_RESUME_ARGS} \
++   ${MODEL_ARGS} \
++   --tensor-model-parallel-size ${TP} \
++   --expert-model-parallel-size ${EP} \
++   --pipeline-model-parallel-size ${PP} \
++   --tokenizer-model ${TOKENIZER_MODEL} \
++   --load ${MLM_MODEL_CKPT} \
++   --save ${MLM_MODEL_SAVE} \
++   ${MLM_DATA_ARGS} \
++   ${MLM_OPTIM_ARGS} \
++   ${MLM_TRAIN_ARGS} \
++   ${MLM_EVAL_ARGS} \
++   ${MLM_RESUME_ARGS} \
++    --seed 1234 \
++    --weight-decay 0.1  \
++    --cuda-graph-warmup-steps 2 \
++    --exit-on-missing-checkpoint \
++    --init-method-std 0.006 \
++    --moe-permute-fusion \
++    --moe-router-bias-update-rate 0 \
++    --rotary-base 600000 \
++    --rotary-scaling-factor 1.0 \
++    --split None \
++    --train-samples 664 \
++    --recompute-granularity full \
++    --recompute-method uniform \
++    --recompute-num-layers 1 \
+     ${MLM_DEFAULT_ARGS} ${MLM_EXTRA_ARGS}
+diff --git a/examples/post_training/modelopt/requirements.txt b/examples/post_training/modelopt/requirements.txt
+index 1d70ebcc7..43a2a6a9a 100644
+--- a/examples/post_training/modelopt/requirements.txt
++++ b/examples/post_training/modelopt/requirements.txt
+@@ -1,11 +1,11 @@
+ datasets
+ jsonlines
+-mamba-ssm
+-causal-conv1d
++# mamba-ssm
++# causal-conv1d
+ nvidia-modelopt
+ omegaconf
+ pulp
+ tensorstore!=0.1.46,!=0.1.72
+ torchprofile
+-transformers
++# transformers
+ zarr
+diff --git a/megatron/core/datasets/gpt_dataset.py b/megatron/core/datasets/gpt_dataset.py
+index b80caaf6c..1783dacc9 100644
+--- a/megatron/core/datasets/gpt_dataset.py
++++ b/megatron/core/datasets/gpt_dataset.py
+@@ -208,12 +208,14 @@ class GPTDataset(MegatronDataset):
+             position_ids = self.cached_position_ids
+ 
+         # For padded sequences, mask the loss
+-        loss_mask[labels == self._pad_token_id] = 0.0
++        # loss_mask[labels == self._pad_token_id] = 0.0
+ 
+         # For padded sequences, ensure the embedding layer can map the token ID
+-        tokens[tokens == self._pad_token_id] = 0
+-        labels[labels == self._pad_token_id] = 0
++        # bailing _pad_token_id = eos_token_id,so this code will transform eos to '!'.
++        # tokens[tokens == self._pad_token_id] = 0
++        # labels[labels == self._pad_token_id] = 0
+ 
++        # self.config.tokenizer.tokenizer.decode(self.config.tokenizer.tokenizer.all_special_ids, skip_special_tokens=False)
+         # Batch padding sequence so we mask the loss
+         if idx is None:
+             loss_mask = torch.zeros_like(loss_mask)
+diff --git a/megatron/core/optimizer/__init__.py b/megatron/core/optimizer/__init__.py
+index 5ecc707ce..6d61df766 100644
+--- a/megatron/core/optimizer/__init__.py
++++ b/megatron/core/optimizer/__init__.py
+@@ -330,6 +330,18 @@ def _get_megatron_optimizer_based_on_param_groups(
+                 **optimizer_defaults,
+             )
+             init_state_fn = None
++        elif config.optimizer == 'adamw-bnb-8bit':
++            from bitsandbytes.optim import AdamW8bit
++            kwargs = {
++                "params": param_groups,
++                "lr": config.lr,
++                "weight_decay": config.weight_decay,
++                "betas": (config.adam_beta1, config.adam_beta2),
++                "eps": config.adam_eps,
++                "is_paged": True,
++            }
++            optimizer = AdamW8bit(**kwargs)
++            init_state_fn = None
+         elif config.optimizer == 'adam':
+             kwargs = {
+                 "params": param_groups,
+diff --git a/megatron/core/optimizer/distrib_optimizer.py b/megatron/core/optimizer/distrib_optimizer.py
+index 28c753eb0..e79459f20 100644
+--- a/megatron/core/optimizer/distrib_optimizer.py
++++ b/megatron/core/optimizer/distrib_optimizer.py
+@@ -485,8 +485,9 @@ class DistributedOptimizer(MixedPrecisionOptimizer):
+             assert self.ddp_config == model_chunk.ddp_config
+         self.distributed_optimizer_instance_id = distributed_optimizer_instance_id
+ 
+-        assert isinstance(optimizer, (Adam, HybridDeviceOptimizer)) or optimizer is None, (
+-            "Only Adam and HybridDeviceOptimizer currently supported, "
++        extra_supported_optimizer_names = ['adamw-bnb-8bit']
++        assert isinstance(optimizer, (Adam, HybridDeviceOptimizer)) or optimizer is None or getattr(config, 'optimizer', None) in extra_supported_optimizer_names, (
++            f"Only Adam and HybridDeviceOptimizer and {extra_supported_optimizer_names} currently supported, "
+             "due to checkpointing requirements."
+         )
+ 
+@@ -623,6 +624,13 @@ class DistributedOptimizer(MixedPrecisionOptimizer):
+                     assert len(steps) == 1, f"steps: {optimizer.state}"
+                     step = steps[0]
+                     break
++        elif self.config.optimizer == 'adamw-bnb-8bit':
++            if len(inner_state_dict["state"]) == 0:
++                step = None
++            else:
++                steps = list(set([s["step"] for s in inner_state_dict["state"].values()]))
++                assert len(steps) == 1
++                step = steps[0]
+ 
+         # Optimizer state (do not store parameter state here).
+         state_dict['optimizer'] = {k: v for k, v in inner_state_dict.items() if k != "state"}
+@@ -633,6 +641,8 @@ class DistributedOptimizer(MixedPrecisionOptimizer):
+                 param_group["step"] = step
+             elif isinstance(self.optimizer, HybridDeviceOptimizer) and step is not None:
+                 param_group["step"] = int(step)
++            elif self.config.optimizer == 'adamw-bnb-8bit':
++                param_group["step"] = step
+ 
+         # Grad scaler state.
+         if self.grad_scaler:
+@@ -739,6 +749,26 @@ class DistributedOptimizer(MixedPrecisionOptimizer):
+                                     tensors["master_param"] = init_shard(
+                                         self.config.main_params_dtype
+                                     )
++                            elif self.config.optimizer == 'adamw-bnb-8bit':
++                                from bitsandbytes.functional import quantize_blockwise
++                                optim_state = tensors
++                                optim_fp8_state = {}
++                                optim_state_key_patterns = {
++                                    "exp_avg": ('state1', 'absmax1', 'qmap1'),
++                                    "exp_avg_sq": ('state2', 'absmax2', 'qmap2'),
++                                }
++                                min_8bit_size = self.optimizer.args.min_8bit_size
++                                for key, (state_key, absmax_key, qmap_key) in optim_state_key_patterns.items():
++                                    if optim_state[key].numel() < min_8bit_size:
++                                        optim_fp8_state[state_key] = optim_state[key]
++                                    else:
++                                        state, quant_state = quantize_blockwise(A=optim_state[key], blocksize=256)
++                                        optim_fp8_state.update({
++                                            state_key: torch.empty_like(state),
++                                            absmax_key: torch.empty_like(quant_state.absmax),
++                                            qmap_key: torch.empty_like(quant_state.code),
++                                        })
++                                tensors = optim_fp8_state
+                             state_dict_state.append((state_order, tensors))
+ 
+             # Sort by state order (see method docstring for details).
+@@ -758,6 +788,12 @@ class DistributedOptimizer(MixedPrecisionOptimizer):
+             for s in state_dict_state.values():
+                 # Native PyTorch state dict requires step (i.e., iteration).
+                 s["step"] = step
++        elif self.config.optimizer == 'adamw-bnb-8bit':
++            steps = list(set([g["step"] for g in state_dict["optimizer"]["param_groups"]]))
++            assert len(steps) == 1
++            for s in state_dict_state.values():
++                # Native PyTorch state dict requires step (i.e., iteration).
++                s["step"] = steps[0]
+         elif isinstance(self.optimizer, HybridDeviceOptimizer):
+             # Handle Torch AdamW special case, which, unlike FusedAdam, Torch AdamW
+             # has an extra optimizer state "step".
+@@ -842,6 +878,31 @@ class DistributedOptimizer(MixedPrecisionOptimizer):
+ 
+                 tensors[k] = self.optimizer.get_unscaled_state(sharded_model_param, k)
+             tensors["param"] = tensors.pop("master_param")
++        elif self.config.optimizer == 'adamw-bnb-8bit':
++            from bitsandbytes.functional import dequantize_blockwise
++
++            main_param = self.optimizer.param_groups[group_index]["params"][group_order]
++            optim_fp8_state = self.optimizer.state[main_param]
++            optim_state = {
++                'step': optim_fp8_state['step'],
++            }
++            optim_state_key_patterns = {
++                "exp_avg": ('state1', 'absmax1', 'qmap1'),
++                "exp_avg_sq": ('state2', 'absmax2', 'qmap2'),
++            }
++            for key, (state_key, absmax_key, qmap_key) in optim_state_key_patterns.items():
++                if absmax_key not in optim_fp8_state.keys():
++                    optim_state[key] = optim_fp8_state[state_key]
++                else:
++                    state_device = optim_fp8_state[state_key].device
++                    absmax_device = optim_fp8_state[absmax_key].device
++                    optim_state[key] = dequantize_blockwise(
++                        A=optim_fp8_state[state_key].to(absmax_device),
++                        absmax=optim_fp8_state[absmax_key],
++                        code=optim_fp8_state[qmap_key],
++                        blocksize=256,
++                    ).to(state_device)
++            tensors = {"param": main_param, **optim_state}
+         else:
+             main_param = self.optimizer.param_groups[group_index]["params"][group_order]
+             optim_state = self.optimizer.state[main_param]
+@@ -888,6 +949,42 @@ class DistributedOptimizer(MixedPrecisionOptimizer):
+                     self.optimizer.set_scaled_state(sharded_model_param, "master_param", v)
+                 else:
+                     self.optimizer.set_scaled_state(sharded_model_param, k, v)
++        elif self.config.optimizer == 'adamw-bnb-8bit':
++            from bitsandbytes.functional import quantize_blockwise, create_dynamic_map
++
++            main_param = self.optimizer.param_groups[group_index]["params"][group_order]
++            optim_state = self.optimizer.state[main_param]
++
++            optim_fp8_tensors = {
++                'param': tensors['param'],
++            }
++            optim_state_key_patterns = {
++                "exp_avg": ('state1', 'absmax1', 'qmap1'),
++                "exp_avg_sq": ('state2', 'absmax2', 'qmap2'),
++            }
++            quant_state_code_map = {
++                'qmap1': create_dynamic_map(signed=True),
++                'qmap2': create_dynamic_map(signed=False),
++            }
++            min_8bit_size = self.optimizer.args.min_8bit_size
++            for key, (state_key, absmax_key, qmap_key) in optim_state_key_patterns.items():
++                if tensors[key].numel() < min_8bit_size:
++                    optim_fp8_tensors[state_key] = tensors[key]
++                else:
++                    state, quant_state = quantize_blockwise(
++                        A=tensors[key].to(optim_state[state_key].device),
++                        code=quant_state_code_map[qmap_key],
++                        blocksize=256
++                    )
++                    optim_fp8_tensors.update({
++                        state_key: state,
++                        absmax_key: quant_state.absmax,
++                        qmap_key: quant_state.code,
++                    })
++
++            dst_tensors = {"param": main_param, **optim_state}
++            for key in optim_fp8_tensors.keys():
++                dst_tensors[key].copy_(optim_fp8_tensors[key])
+         else:
+             main_param = self.optimizer.param_groups[group_index]["params"][group_order]
+             optim_state = self.optimizer.state[main_param]
+diff --git a/megatron/core/transformer/moe/moe_utils.py b/megatron/core/transformer/moe/moe_utils.py
+index 99ff25929..997b2fe1d 100644
+--- a/megatron/core/transformer/moe/moe_utils.py
++++ b/megatron/core/transformer/moe/moe_utils.py
+@@ -786,6 +786,8 @@ def get_updated_expert_bias(tokens_per_expert, expert_bias, expert_bias_update_r
+         expert_bias (torch.Tensor): The bias for each expert.
+         expert_bias_udpate_rate (float): The update rate for the expert bias.
+     """
++    from megatron.training import get_args
++    args = get_args()
+     with torch.no_grad():
+         # All Reduce Across TPxCPxDP group
+         torch.distributed.all_reduce(
+@@ -795,7 +797,11 @@ def get_updated_expert_bias(tokens_per_expert, expert_bias, expert_bias_update_r
+         )
+         average_tokens = tokens_per_expert.sum(dim=-1, keepdim=True) / tokens_per_expert.shape[-1]
+         offset = average_tokens - tokens_per_expert
+-        updated_expert_bias = expert_bias + torch.sign(offset) * expert_bias_update_rate
++        adaptive_coef = 1.0
++        if getattr(args, 'bias_zero_mean_update', None):
++            updated_expert_bias = expert_bias + (torch.sign(offset) - torch.sign(offset).mean(dim=-1, keepdim=True)) * expert_bias_update_rate * adaptive_coef
++        else:
++            updated_expert_bias = expert_bias + torch.sign(offset) * expert_bias_update_rate * adaptive_coef
+         return updated_expert_bias
+ 
+ 
+diff --git a/megatron/core/transformer/multi_token_prediction.py b/megatron/core/transformer/multi_token_prediction.py
+index b3ba16d07..4e73b3e7e 100755
+--- a/megatron/core/transformer/multi_token_prediction.py
++++ b/megatron/core/transformer/multi_token_prediction.py
+@@ -370,9 +370,13 @@ class MultiTokenPredictionLayer(MegatronModule):
+             skip_bias_add=False,
+             is_expert=False,
+         )
+-        self.transformer_layer = build_module(
+-            self.submodules.transformer_layer, config=self.config, vp_stage=vp_stage
+-        )
++
++        fp8_init_context = get_fp8_context(self.config, is_init=True)
++
++        with fp8_init_context:
++            self.transformer_layer = build_module(
++                self.submodules.transformer_layer, config=self.config, vp_stage=vp_stage
++            )
+ 
+         self.final_layernorm = build_module(
+             self.submodules.layer_norm,
+@@ -443,7 +447,7 @@ class MultiTokenPredictionLayer(MegatronModule):
+         else:
+             fp8_context = nullcontext()
+ 
+-        with rng_context, fp8_context:
++        with rng_context:
+             decoder_input = self.enorm(decoder_input)
+             decoder_input = make_viewless_tensor(
+                 inp=decoder_input, requires_grad=True, keep_graph=True
+@@ -466,19 +470,20 @@ class MultiTokenPredictionLayer(MegatronModule):
+             if self.sequence_parallel:
+                 hidden_states = scatter_to_sequence_parallel_region(hidden_states)
+ 
+-            hidden_states, _ = self.transformer_layer(
+-                hidden_states=hidden_states,
+-                attention_mask=attention_mask,
+-                context=context,
+-                context_mask=context_mask,
+-                rotary_pos_emb=rotary_pos_emb,
+-                rotary_pos_cos=rotary_pos_cos,
+-                rotary_pos_sin=rotary_pos_sin,
+-                attention_bias=attention_bias,
+-                inference_params=inference_params,
+-                packed_seq_params=packed_seq_params,
+-                sequence_len_offset=sequence_len_offset,
+-            )
++            with fp8_context:
++                hidden_states, _ = self.transformer_layer(
++                    hidden_states=hidden_states,
++                    attention_mask=attention_mask,
++                    context=context,
++                    context_mask=context_mask,
++                    rotary_pos_emb=rotary_pos_emb,
++                    rotary_pos_cos=rotary_pos_cos,
++                    rotary_pos_sin=rotary_pos_sin,
++                    attention_bias=attention_bias,
++                    inference_params=inference_params,
++                    packed_seq_params=packed_seq_params,
++                    sequence_len_offset=sequence_len_offset,
++                )
+ 
+         # Layer norm before shared head layer.
+         hidden_states = self.final_layernorm(hidden_states)
+@@ -672,12 +677,13 @@ class MultiTokenPredictionBlock(MegatronModule):
+             loss_mask, num_tokens = roll_tensor(loss_mask, shifts=-1, dims=-1)
+             mtp_loss = compute_language_model_loss(labels, mtp_logits)
+             mtp_loss = loss_mask * mtp_loss
++            num_tokens = torch.max(num_tokens, torch.ones_like(num_tokens))
+             if self.training:
+                 MTPLossLoggingHelper.save_loss_to_tracker(
+                     torch.sum(mtp_loss) / num_tokens,
+                     layer_number,
+                     self.config.mtp_num_layers,
+-                    avg_group=parallel_state.get_tensor_and_context_parallel_group(),
++                    avg_group=parallel_state.get_data_parallel_group(with_context_parallel=True),
+                 )
+             mtp_loss_scale = self.mtp_loss_scaling_factor / self.config.mtp_num_layers
+             if self.config.calculate_per_token_loss:
+diff --git a/megatron/core/transformer/transformer_config.py b/megatron/core/transformer/transformer_config.py
+index 77577f291..a8e244c62 100644
+--- a/megatron/core/transformer/transformer_config.py
++++ b/megatron/core/transformer/transformer_config.py
+@@ -228,6 +228,11 @@ class TransformerConfig(ModelParallelConfig):
+     """If True, run attention masking and softmax in fp32. This should be True if
+     apply_query_key_layer_scaling is True."""
+ 
++    skip_casting_dtype_for_param_pattern: Union[str, List[str]] = None
++    """Skip casting dtype for parameters or buffers matching this pattern(s) when training with fp16 or bf16.
++    Note: this pattern(s) must be regular expression, e.g. ["^expert_bias$|.+\.expert_bias$"]
++    """
++
+     disable_bf16_reduced_precision_matmul: bool = False
+     """If True, sets torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction=False to
+     prevent matmul from using reduced precision accumulation when using BF16."""
+diff --git a/megatron/post_training/bailing_sft_utils.py b/megatron/post_training/bailing_sft_utils.py
+new file mode 100644
+index 000000000..a6525b1eb
+--- /dev/null
++++ b/megatron/post_training/bailing_sft_utils.py
+@@ -0,0 +1,156 @@
++import json
++from typing import List, Dict, Optional, Tuple
++
++BAILING_TOOL_TEMPLATE = """# Tools
++
++You may call one or more functions to assist with the user query.
++
++You are provided with function signatures within <tools></tools> XML tags:
++<tools>
++{tool_text}
++</tools>
++
++For each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:
++<tool_call>
++{{"name": <function-name>, "arguments": <args-json-object>}}
++</tool_call>"""
++
++SYSTEM_TEMPLATE = "<role>SYSTEM</role>{content}\ndetailed thinking off<|role_end|>"
++USER_TEMPLATE = "<role>HUMAN</role>{content}<|role_end|><role>ASSISTANT</role>"
++ASSISTANT_TEMPLATE = "{content}<|role_end|>"
++OBSERVATION_TEMPLATE = "<role>OBSERVATION</role>{content}<|role_end|><role>ASSISTANT</role>"
++TOOL_CALL_TEMPLATE = "<tool_call>\n{content}\n</tool_call>"
++TOOL_RESPONSE_TEMPLATE = "\n<tool_response>\n{content}\n</tool_response>"
++DEFAULT_SYSTEM = ""
++
++
++def format_chat_prompt(
++    messages: List[Dict],
++    system: str = None,
++    tools: Optional[List[Dict]] = None,
++    tokenizer=None,
++    tokenize=True,
++) -> Tuple[List[int], List[int]]:
++    """Format chat prompt."""
++    assert not (tokenize == True and tokenizer is None), "tokenize is True and tokenizer is None"
++
++    if messages[0]["role"] == "system":
++        system = messages[0]["content"]
++        messages = messages[1:]
++    if system is None:
++        system = DEFAULT_SYSTEM
++    skip_num = 0
++    user_message_list = []
++    assistant_message_list = []
++    for i, message in enumerate(messages):
++        if skip_num > 0:
++            skip_num -= 1
++            continue
++        is_user_message = True
++        elements = []
++        if i == 0:
++            if tools:
++                tool_text = "\n".join(json.dumps(tool, ensure_ascii=False) for tool in tools)
++                tool_text = BAILING_TOOL_TEMPLATE.format(tool_text=tool_text)
++                system = system + "\n" + tool_text
++            if system is not None:
++                system_text = SYSTEM_TEMPLATE.format(content=system)
++                elements.append(system_text)
++
++        if message["role"] == "user":
++            user_text = USER_TEMPLATE.format(content=message["content"])
++            elements.append(user_text)
++        elif message["role"] == "tool":
++            tool_response_text = TOOL_RESPONSE_TEMPLATE.format(content=message["content"])
++            for tool_idx in range(i+1, len(messages)):
++                if messages[tool_idx]["role"] == "tool":
++                    tool_response_text += TOOL_RESPONSE_TEMPLATE.format(content=messages[tool_idx]["content"])
++                    skip_num += 1
++                else:
++                    break
++            observation_text = OBSERVATION_TEMPLATE.format(content=tool_response_text)
++            elements.append(observation_text)
++        elif message["role"] == "observation":
++            observation_text = OBSERVATION_TEMPLATE.format(content=message["content"])
++            elements.append(observation_text)
++        elif message["role"] == "assistant":
++            if "tool_calls" in message and len(message["tool_calls"]) > 0:
++                content = ""
++                for func in message["tool_calls"]:
++                    s = json.dumps(func["function"], ensure_ascii=False)
++                    content += "\n" + TOOL_CALL_TEMPLATE.format(content=s)
++                # content = content + "\n"
++                content = content[1:]
++            else:
++                content = message["content"]
++            assistant_text = ASSISTANT_TEMPLATE.format(content=content)
++            elements.append(assistant_text)
++            is_user_message = False
++        else:
++            raise ValueError(f"Unknown role: {message['role']} in messages: {messages}")
++        res = "".join(element for element in elements)
++        if tokenize:
++            res = tokenizer.encode(res)
++        if is_user_message:
++            user_message_list.append(res)
++        else:
++            assistant_message_list.append(res)
++
++    return user_message_list, assistant_message_list
++
++
++def get_input_ids_and_labels_for_sft(
++    messages: List[Dict],
++    tokenizer,
++    system: str = None,
++    tools: Optional[List[Dict]] = None,
++    use_ture_multiturn: bool = True
++):
++    user_message_list, assistant_message_list = format_chat_prompt(
++        messages=messages,
++        system=system,
++        tools=tools,
++        tokenizer=tokenizer,
++        tokenize=True
++    )
++    input_ids = []
++    labels = []
++    if use_ture_multiturn:
++        assert len(user_message_list) == len(assistant_message_list), \
++            "user message len and assistant message len must be equal"
++        for user_message_id, assistant_message_id in zip(user_message_list, assistant_message_list):
++            input_ids.extend(user_message_id)
++            labels.extend([-100] * len(user_message_id))
++            input_ids.extend(assistant_message_id)
++            labels.extend(assistant_message_id)
++    else:
++        for user_message_id in user_message_list:
++            input_ids.extend(user_message_id)
++        for assistant_message_id in assistant_message_list:
++            input_ids.extend(assistant_message_id)
++        labels.extend([-100] * (len(input_ids) - len(assistant_message_list[-1])))
++        labels.extend(assistant_message_list[-1])
++    input_ids.append(tokenizer.pad_token_id)
++    # labels.append(-100)
++    labels.append(tokenizer.pad_token_id)
++    return input_ids, labels
++
++
++def pdb_debug(sleep_time=3600, rank0_wait=True, global_rank=None):
++    import torch.distributed as dist
++    import time
++    import pdb
++
++    if global_rank is None:
++        global_rank = dist.get_rank()
++    else:
++        global_rank = 0
++
++    if global_rank == 0:
++        print('enter_pdb')
++        if rank0_wait:
++            pdb.set_trace()
++    else:
++        print('enter_sleep')
++        time.sleep(sleep_time)
++
+diff --git a/megatron/post_training/model_provider.py b/megatron/post_training/model_provider.py
+index 598591c6b..46c79d99e 100644
+--- a/megatron/post_training/model_provider.py
++++ b/megatron/post_training/model_provider.py
+@@ -4,13 +4,16 @@
+ 
+ import os
+ from argparse import Namespace
+-from typing import Any, Dict
++from dataclasses import dataclass
++from typing import Any, Dict, Optional, Union
+ 
+ import modelopt.torch.distill as mtd
+ import modelopt.torch.opt as mto
++import megatron
+ import yaml
+ 
+ from megatron.core.models.gpt import GPTModel as MCoreGPTModel
++from megatron.core.models.gpt import GPTModel 
+ from megatron.core.models.gpt.heterogeneous.heterogeneous_layer_specs import (
+     get_gpt_heterogeneous_layer_spec,
+ )
+@@ -19,6 +22,12 @@ from megatron.core.post_training.modelopt.gpt.model_specs import get_gpt_modelop
+ from megatron.core.post_training.modelopt.gpt.state_dict_hooks import (
+     mcore_gpt_load_te_state_dict_pre_hook,
+ )
++from megatron.core.models.gpt.gpt_layer_specs import (
++    get_gpt_decoder_block_spec,
++    get_gpt_layer_local_spec,
++    get_gpt_layer_with_transformer_engine_spec,
++    get_gpt_mtp_block_spec,
++)
+ from megatron.core.post_training.modelopt.mamba.model_specs import get_mamba_stack_modelopt_spec
+ from megatron.post_training.algos import distillation
+ from megatron.post_training.checkpointing import load_modelopt_checkpoint, load_modelopt_state
+@@ -67,7 +76,7 @@ def _load_teacher_model_config(checkpoint_path: str) -> Namespace:
+     if "bias" in config:
+         config["disable_bias_linear"] = not config["bias"]
+     if config.get("activation") == "swiglu":
+-        config["swiglu"] = True
++        config[ "swiglu"] = True
+     if config.get("position_embedding_type", False) is None:
+         config["use_rotary_position_embeddings"] = config["no_position_embedding"] = True
+     if "share_embeddings_and_output_weights" in config:
+@@ -117,7 +126,7 @@ def _teacher_provider(config: Namespace, model_kwargs: Dict[str, Any]) -> MCoreG
+     return teacher
+ 
+ 
+-def model_provider(pre_process=True, post_process=True, parallel_output=True) -> MCoreGPTModel:
++def model_provider_old(pre_process=True, post_process=True, parallel_output=True) -> MCoreGPTModel:
+     """Builds the model.
+ 
+     If you set the use_legacy_models to True, it will return the legacy GPT model and if not the core GPT model.
+@@ -248,3 +257,149 @@ def model_provider(pre_process=True, post_process=True, parallel_output=True) ->
+         distillation.adjust_distillation_model_for_mcore(model, distill_cfg)
+ 
+     return model
++
++
++def _get_transformer_layer_spec(use_te, config):
++    """Get transformer layer specification based on configuration.
++    
++    Args:
++        use_te (bool): Whether to use Transformer Engine
++        args: Training arguments
++        config: Model configuration
++        
++    Returns:
++        transformer_layer_spec: The transformer layer specification
++    """
++    args = get_args()
++    if use_te:
++        return get_gpt_layer_with_transformer_engine_spec(
++            args.num_experts,
++            args.moe_grouped_gemm,
++            args.qk_layernorm,
++            args.multi_latent_attention,
++            args.moe_use_legacy_grouped_gemm,
++            qk_l2_norm=args.qk_l2_norm,
++            use_kitchen=config.use_kitchen,
++        )
++    else:
++        return get_gpt_layer_local_spec(
++            args.num_experts,
++            args.moe_grouped_gemm,
++            args.qk_layernorm,
++            args.multi_latent_attention,
++            args.moe_use_legacy_grouped_gemm,
++            normalization=args.normalization,
++            use_kitchen=config.use_kitchen,
++        )
++
++
++@dataclass
++class FlexibleVPPConfig:
++    pipeline_model_parallel_layout = None
++    mtp_num_layers = None
++
++
++def model_provider(
++    pre_process=True, post_process=True, vp_stage: Optional[int] = None
++) -> Union[GPTModel, megatron.legacy.model.GPTModel]:
++    """Builds the model.
++
++    If you set the use_legacy_models to True, it will return the legacy GPT model and if not the mcore GPT model.
++
++    Args:
++        pre_process (bool, optional): Set to true if you need to compute embedings. Defaults to True.
++        post_process (bool, optional): Set to true if you need to want to compute output logits/loss. Defaults to True.
++
++
++    Returns:
++        Union[GPTModel, megatron.legacy.model.GPTModel]: The returned model
++    """
++    args = get_args()
++
++    # if has_nvidia_modelopt and modelopt_args_enabled(args):  # [ModelOpt]
++    #     return model_provider_modelopt(pre_process, post_process)
++
++    use_te = args.transformer_impl == "transformer_engine"
++
++    if args.record_memory_history:
++        torch.cuda.memory._record_memory_history(
++            True,
++            # keep 100,000 alloc/free events from before the snapshot
++            trace_alloc_max_entries=100000,
++            # record stack information for the trace events
++            trace_alloc_record_context=True,
++        )
++
++        def oom_observer(device, alloc, device_alloc, device_free):
++            # snapshot right after an OOM happened
++            print('saving allocated state during OOM')
++            snapshot = torch.cuda.memory._snapshot()
++            from pickle import dump
++
++            dump(
++                snapshot,
++                open(f"oom_rank-{torch.distributed.get_rank()}_{args.memory_snapshot_path}", 'wb'),
++            )
++
++        torch._C._cuda_attach_out_of_memory_observer(oom_observer)
++
++    print_rank_0('building GPT model ...')
++    # Experimental loading arguments from yaml
++    if args.yaml_cfg is not None:
++        config = core_transformer_config_from_yaml(args, "language_model")
++    else:
++        config = core_transformer_config_from_args(args)
++
++    if args.use_legacy_models:
++        model = megatron.legacy.model.GPTModel(
++            config,
++            num_tokentypes=0,
++            parallel_output=True,
++            pre_process=pre_process,
++            post_process=post_process,
++        )
++    else:  # using core models
++        if args.spec is not None:
++            transformer_layer_spec = import_module(args.spec)
++        else:
++            if args.num_experts:
++                # Define the decoder block spec
++                transformer_layer_spec = get_gpt_decoder_block_spec(
++                    config, use_transformer_engine=use_te, normalization=args.normalization, qk_l2_norm=args.qk_l2_norm, vp_stage=vp_stage
++                )
++            elif args.heterogeneous_layers_config_path is not None:
++                transformer_layer_spec = get_gpt_heterogeneous_layer_spec(config, use_te)
++            else:
++                # Define the decoder layer spec
++                transformer_layer_spec = _get_transformer_layer_spec(use_te, config)
++        mtp_block_spec = None
++        if args.mtp_num_layers is not None:
++            if hasattr(transformer_layer_spec, 'layer_specs') and len(transformer_layer_spec.layer_specs) == 0:
++                # Get the decoder layer spec explicitly if no decoder layer in the last stage,
++                # Only happens with block spec (TransformerBlockSubmodules) when using MoE.
++                transformer_layer_spec_for_mtp = _get_transformer_layer_spec(use_te, config)
++            else:
++                transformer_layer_spec_for_mtp = transformer_layer_spec
++            mtp_block_spec = get_gpt_mtp_block_spec(
++                config, transformer_layer_spec_for_mtp, use_transformer_engine=use_te, vp_stage=vp_stage
++            )
++
++        model = MCoreGPTModel(
++            config=config,
++            transformer_layer_spec=transformer_layer_spec,
++            vocab_size=args.padded_vocab_size,
++            max_sequence_length=args.max_position_embeddings,
++            pre_process=pre_process,
++            post_process=post_process,
++            fp16_lm_cross_entropy=args.fp16_lm_cross_entropy,
++            parallel_output=True,
++            share_embeddings_and_output_weights=not args.untie_embeddings_and_output_weights,
++            position_embedding_type=args.position_embedding_type,
++            rotary_percent=args.rotary_percent,
++            rotary_base=args.rotary_base,
++            rope_scaling=args.use_rope_scaling,
++            mtp_block_spec=mtp_block_spec,
++            vp_stage=vp_stage,
++        )
++
++    return model
+\ No newline at end of file
+diff --git a/megatron/training/arguments.py b/megatron/training/arguments.py
+index 7b1b35b15..87b55c9f5 100644
+--- a/megatron/training/arguments.py
++++ b/megatron/training/arguments.py
+@@ -1467,6 +1467,7 @@ def _add_network_size_args(parser):
+                        'We compute the average of the MTP losses across all depths, '
+                        'and multiply it the scaling factor to obtain the overall MTP loss, '
+                        'which serves as an additional training objective.')
++    group.add_argument('--bias-zero-mean-update', action='store_true', help='update bias')
+     return parser
+ 
+ 
+@@ -1910,7 +1911,7 @@ def _add_training_args(parser):
+                        help='Enable bias only in the QKV linear layers',
+                        dest='add_qkv_bias')
+     group.add_argument('--optimizer', type=str, default='adam',
+-                       choices=['adam', 'sgd'],
++                       choices=['adam', 'sgd', 'adamw-bnb-8bit'],
+                        help='Optimizer function')
+     group.add_argument('--optimizer-cpu-offload', action='store_true',
+                        help='Offload optimizer state to CPU')
+@@ -2457,7 +2458,8 @@ def _add_tokenizer_args(parser):
+                                 'MultimodalTokenizer',
+                                 'NullTokenizer',
+                                 'NullMultimodalTokenizer',
+-                                'SFTTokenizer'],
++                                'SFTTokenizer',
++                                'BailingTokenizer'],
+                        help='What type of tokenizer to use.')
+     group.add_argument('--tokenizer-model', type=str, default=None,
+                        help='Sentencepiece tokenizer model.')
+@@ -2746,6 +2748,8 @@ def _add_moe_args(parser):
+                             'Fp32/fp64 enhances numerical stability, especially with numerous experts. '
+                             'The perf impact should be negligible when used with permute fusion. '
+                             'None means no changes for dtype.')
++    group.add_argument('--skip-casting-dtype-for-param-pattern', type=str, 
++                        default='["^expert_bias$|.+\.expert_bias$"]', help='fp32-bias')
+     group.add_argument('--moe-router-score-function', type=str,
+                        choices=['softmax', 'sigmoid'],
+                        default='softmax',
+diff --git a/megatron/training/checkpointing.py b/megatron/training/checkpointing.py
+index c689f19ba..23b852938 100644
+--- a/megatron/training/checkpointing.py
++++ b/megatron/training/checkpointing.py
+@@ -1200,7 +1200,7 @@ def fix_fp8_params_lose_precision_when_loading_dist_ckpt(state_dict):
+     for key in state_dict.keys():
+         if key.startswith('model'):
+             for _, sharded_tensor in state_dict[key].items():
+-                if is_float8tensor(sharded_tensor.data):
++                if sharded_tensor is not None and is_float8tensor(sharded_tensor.data):
+                     sharded_tensor.data = dequantize_fp8_tensor(sharded_tensor.data).cpu()
+ 
+ 
+diff --git a/megatron/training/tokenizer/bailing_sft_tokenizer.py b/megatron/training/tokenizer/bailing_sft_tokenizer.py
+new file mode 100644
+index 000000000..7d6fae4e2
+--- /dev/null
++++ b/megatron/training/tokenizer/bailing_sft_tokenizer.py
+@@ -0,0 +1,101 @@
++from megatron.core.datasets.megatron_tokenizer import MegatronTokenizer
++from .tokenization_bailing import BailingTokenizer
++
++
++class _GLMMegatronTokenizer(MegatronTokenizer):
++    def __init__(self, tokenizer_name_or_path, use_bailing_tokenizer: bool):
++        name = tokenizer_name_or_path
++        super().__init__(name)
++        if "bt1" in tokenizer_name_or_path or "bailing" in tokenizer_name_or_path or use_bailing_tokenizer:
++            from transformers import AutoTokenizer
++            self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_name_or_path)
++            # self.tokenizer = BailingTokenizer.from_pretrained(tokenizer_name_or_path)
++
++        if self.tokenizer.pad_token_id is None:
++            self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
++        self.encoder = self.tokenizer.get_vocab()
++        self.decoder = {v: k for k, v in self.encoder.items()}
++
++    @property
++    def vocab_size(self):
++        return len(self.tokenizer)  # vocab_size doesn't contain additional tokens
++
++    @property
++    def vocab(self):
++        return {
++            **{
++                special_token: self.tokenizer.convert_tokens_to_ids(special_token)
++                for special_token in self.tokenizer.additional_special_tokens
++            },
++            **self.tokenizer.vocab,
++        }
++
++    @property
++    def inv_vocab(self):
++        return {v: k for k, v in self.vocab.items()}
++
++    def tokenize(self, text):
++        return self.tokenizer.encode(text)
++
++    def detokenize(self, token_ids):
++        return self.tokenizer.decode(token_ids)
++
++    @property
++    def eod(self):
++        return self.eos
++
++    @property
++    def eos_token_id(self):
++        return self.tokenizer.eos_token_id
++
++    @property
++    def cls(self):
++        candidate = self.tokenizer.cls_token_id
++        return self._check_token_candidate(candidate)
++
++    @property
++    def sep(self):
++        candidate = self.tokenizer.sep_token_id
++        return self._check_token_candidate(candidate)
++
++    @property
++    def pad(self):
++        candidate = self.tokenizer.pad_token_id
++
++        # just use eos_token_id if pad_token_id is not available, it is reasonable
++        # maybe add a new token, and resize embedding layer is better
++        if candidate is None:
++            candidate = self.tokenizer.eos_token_id
++        return self._check_token_candidate(candidate)
++
++    @property
++    def mask(self):
++        candidate = self.tokenizer.mask_token_id
++        return self._check_token_candidate(candidate)
++
++    @property
++    def bos(self):
++        raise NotImplementedError("Missing <bos>")
++
++    @property
++    def eos(self):
++        candidate = self.tokenizer.eos_token_id
++        return self._check_token_candidate(candidate)
++
++    @property
++    def additional_special_tokens_ids(self):
++        """All the additional special tokens you may want to use (list of strings)."""
++        return self.tokenizer.additional_special_tokens_ids
++
++    @staticmethod
++    def _check_token_candidate(candidate):
++        if candidate is None:
++            raise AttributeError("Token doesn't exist")
++        return candidate
++
++    def __getattr__(self, name: str):
++        """Forward missing attributes to the wrapped module."""
++        try:
++            return super().__getattr__(name)  # defer to nn.Module's logic
++        except AttributeError:
++            return getattr(self.tokenizer, name)
+\ No newline at end of file
+diff --git a/megatron/training/tokenizer/tokenization_bailing.py b/megatron/training/tokenizer/tokenization_bailing.py
+new file mode 100644
+index 000000000..6fc8e2212
+--- /dev/null
++++ b/megatron/training/tokenizer/tokenization_bailing.py
+@@ -0,0 +1,1098 @@
++#!/usr/bin/python
++#****************************************************************#
++# ScriptName: tokenization_bailing.py
++# Author: $SHTERM_REAL_USER@alibaba-inc.com
++# Create Date: 2025-07-28 16:00
++# Modify Author: $SHTERM_REAL_USER@alibaba-inc.com
++# Modify Date: 2025-07-28 16:00
++# Function: 
++#***************************************************************#
++#!/usr/bin/env python3
++# coding=utf-8
++# Copyright (c) Ant Group. All rights reserved.
++
++import itertools
++from typing import Any, Dict, List, Optional, Union
++
++import torch
++from transformers import PreTrainedTokenizerFast
++from transformers.tokenization_utils_base import AddedToken, BatchEncoding
++from transformers.utils import TensorType, logging
++
++logger = logging.get_logger(__name__)
++
++
++def is_system(msg):
++    return msg['role'].lower() == 'system'
++
++
++def is_user(msg):
++    return msg['role'].lower() in ['human', 'user']
++
++
++def is_assistant(msg):
++    return msg['role'].lower() == 'assistant'
++
++
++def _convert_to_conversation(query, system=None):
++    conversation = []
++    if system:
++        conversation.append({"role": "SYSTEM", "content": system})
++    if isinstance(query, str):
++        conversation.append({"role": "HUMAN", "content": query})
++    elif isinstance(query, List):
++        conversation.extend(query)
++    elif isinstance(query, Dict):
++        if "messages" in query:
++            conversation.extend(query["messages"])
++            if "system_message" in query and len(conversation) > 0 and not is_system(conversation[0]):
++                conversation.insert(0, {"role": "SYSTEM", "content": query["system_message"]})
++        else:
++            conversation.append(query)
++    return conversation
++
++
++class BailingTokenizer(PreTrainedTokenizerFast):
++    is_bailing_tokenizer = True
++    model_input_names = ["input_ids", "attention_mask"]
++    slow_tokenizer_class = None
++
++    # add gmask_token
++    SPECIAL_TOKENS_ATTRIBUTES = [
++        "bos_token",
++        "eos_token",
++        "unk_token",
++        "sep_token",
++        "pad_token",
++        "cls_token",
++        "mask_token",
++        "gmask_token",
++        "additional_special_tokens",
++    ]
++
++    def __init__(
++        self,
++        vocab_file=None,
++        merges_file=None,
++        tokenizer_file=None,
++        clean_up_tokenization_spaces=False,
++        bos_token="<|startoftext|>",
++        eos_token="<|endoftext|>",
++        cls_token="[CLS]",
++        pad_token="<|endoftext|>",
++        gmask_token="[gMASK]",
++        add_bos_token=False,
++        add_eos_token=False,
++        **kwargs,
++    ):
++        self.add_bos_token = add_bos_token
++
++        self._gmask_token = (
++            AddedToken(gmask_token, lstrip=False, rstrip=False, normalized=False)
++            if isinstance(gmask_token, str)
++            else gmask_token
++        )
++
++        self._sop_token = (
++            AddedToken(bos_token, lstrip=False, rstrip=False, normalized=False)
++            if isinstance(bos_token, str)
++            else bos_token
++        )
++
++        self._eop_token = (
++            AddedToken(eos_token, lstrip=False, rstrip=False, normalized=False)
++            if isinstance(eos_token, str)
++            else eos_token
++        )
++
++        super().__init__(
++            vocab_file=vocab_file,
++            merges_file=merges_file,
++            tokenizer_file=tokenizer_file,
++            clean_up_tokenization_spaces=clean_up_tokenization_spaces,
++            bos_token=bos_token,
++            eos_token=eos_token,
++            cls_token=cls_token,
++            pad_token=pad_token,
++            gmask_token=gmask_token,
++            add_bos_token=add_bos_token,
++            add_eos_token=add_eos_token,
++            **kwargs,
++        )
++
++        self.check_special_tokens()
++
++    @property
++    def unique_identifiers(self):
++        return str(self)
++
++    @property
++    def eod(self):
++        return self.eos_token_id
++
++    def check_special_tokens(self):
++        '''
++        eos_token, cls_token, mask_token
++        special tokens should init, check special token is not None
++        '''
++        for name, special_token in zip(
++            ['eos', 'bos', 'cls', 'gmask'],
++            [self.eos_token, self.bos_token, self.cls_token, self.gmask_token],
++        ):
++            assert special_token is not None, f'should init special token [{name}] in tokenizer_config.json'
++
++    @property
++    def gmask_token(self) -> Optional[str]:
++        if self._gmask_token is None:
++            if self.verbose:
++                logger.error("Using gmask_token, but it is not set yet.")
++            return None
++        return str(self._gmask_token)
++
++    @gmask_token.setter
++    def gmask_token(self, value):
++        if not isinstance(value, (str, AddedToken)) and value is not None:
++            raise ValueError("Cannot set a non-string value as the gmask token")
++        self._gmask_token = value
++
++    @property
++    def gmask_token_id(self) -> Optional[int]:
++        if self._gmask_token is None:
++            return None
++        return self.convert_tokens_to_ids(self.gmask_token)
++
++    @property
++    def sop_token(self) -> Optional[str]:
++        if self._sop_token is None:
++            if self.verbose:
++                logger.error("Using sop_token, but it is not set yet.")
++            return None
++        return str(self._sop_token)
++
++    @sop_token.setter
++    def sop_token(self, value):
++        if not isinstance(value, (str, AddedToken)) and value is not None:
++            raise ValueError("Cannot set a non-string value as the sop token")
++        self._sop_token = value
++
++    @property
++    def sop_token_id(self) -> Optional[int]:
++        if self._sop_token is None:
++            return None
++        return self.convert_tokens_to_ids(self.sop_token)
++
++    @property
++    def eop_token(self) -> Optional[str]:
++        if self._eop_token is None:
++            if self.verbose:
++                logger.error("Using eop_token, but it is not set yet.")
++            return None
++        return str(self._eop_token)
++
++    @eop_token.setter
++    def eop_token(self, value):
++        if not isinstance(value, (str, AddedToken)) and value is not None:
++            raise ValueError("Cannot set a non-string value as the eop token")
++        self._eop_token = value
++
++    @property
++    def eop_token_id(self) -> Optional[int]:
++        if self._eop_token is None:
++            return None
++        return self.convert_tokens_to_ids(self.eop_token)
++
++    @property
++    def vocab_size(self):
++        return len(self.get_vocab())
++
++    def _chat_from_json(self, chat, chat_format="antglm_chat", system=None):
++        msgs = chat if "messages" not in chat else chat["messages"]
++        _msgs = []
++        sys_msg = None
++        for msg in msgs:
++            if is_system(msg):
++                sys_msg = msg['content']
++            else:
++                _msgs.append(msg)
++        chat = {"messages": _msgs}
++        system = system or sys_msg
++        if system:
++            chat['system_message'] = system
++        from .chat_format import Chat
++
++        return Chat.from_json(chat, name=chat_format)
++
++    def apply_chat_template(
++        self,
++        conversation: Union[List[Dict[str, str]], List[List[Dict[str, str]]]],
++        tools: Optional[List[Dict]] = None,
++        documents: Optional[List[Dict[str, str]]] = None,
++        chat_template: Optional[str] = None,
++        add_generation_prompt: bool = False,
++        system: str = None,  # only used for legacy chatml
++        tokenize=False,
++        padding: bool = False,
++        truncation: bool = False,
++        max_length: Optional[int] = None,
++        return_tensors: Optional[Union[str, TensorType]] = None,
++        return_dict: bool = False,
++        return_assistant_tokens_mask: bool = False,
++        tokenizer_kwargs: Optional[Dict[str, Any]] = None,
++        **kwargs,
++    ):
++        if hasattr(self, "chat_template") and self.chat_template:
++            if isinstance(conversation, Dict) and "messages" in conversation:
++                conversation = conversation["messages"]
++            # use transformers built-in method
++            return super().apply_chat_template(
++                conversation=conversation,
++                tools=tools,
++                documents=documents,
++                chat_template=chat_template,
++                add_generation_prompt=add_generation_prompt,
++                tokenize=tokenize,
++                padding=padding,
++                truncation=truncation,
++                return_tensors=return_tensors,
++                return_dict=return_dict,
++                return_assistant_tokens_mask=return_assistant_tokens_mask,
++                tokenizer_kwargs=tokenizer_kwargs,
++            )
++
++        # 非chat_template方式后续将不再支持。
++        logger.warning("Please set chat_template in tokenizer_config.json!")
++
++        chat_format = kwargs.get('chat_format', 'antglm_chat')
++
++        is_batched = False
++
++        if isinstance(conversation, List) and (
++            isinstance(conversation[0], (list, tuple)) or "messages" in conversation[0]
++        ):
++            conversations = conversation
++            is_batched = True
++
++        if not is_batched:
++            conversations = [conversation]
++
++        rendered = []
++        for chat in conversations:
++            rendered_chat = self._chat_from_json(chat, chat_format=chat_format, system=system).prompt_str
++            rendered.append(rendered_chat)
++
++        if not is_batched:
++            rendered = rendered[0]
++
++        if tokenize:
++            out = self(
++                rendered,
++                padding=padding,
++                truncation=truncation,
++                max_length=max_length,
++                add_special_tokens=False,
++                return_tensors=return_tensors,
++            )
++            if return_dict:
++                return out
++            else:
++                return out["input_ids"]
++        else:
++            return rendered
++
++    def _build_position_ids(
++        self,
++        mask_pos: int,
++        bos_pos: int,
++        max_output_length: int,
++        rotary_type: Optional[str] = "none",
++        **kwargs,
++    ) -> List[List[int]]:
++        window_size = kwargs.get("window_size", 1024) - 1
++        block_position_ids = [0] * bos_pos
++
++        # 获得mask所在的位置，用于后面output positionid的构造
++        if "1d" in rotary_type:
++            position_ids = list(range(bos_pos)) + list(range(mask_pos + 1, mask_pos + max_output_length + 2))
++            block_position_ids = block_position_ids + list(range(1, max_output_length + 2))
++        elif "2d" in rotary_type:
++            # 后面input_ids要加一个bos_id
++            position_ids = list(range(bos_pos))
++            position_ids = position_ids + [mask_pos] * (1 + max_output_length)
++            block_position_ids = block_position_ids + list(range(1, max_output_length + 2))
++        else:
++            # build position ids
++            position_ids = []
++            repeat_times = bos_pos // window_size
++            for _ in range(repeat_times):
++                position_ids += list(range(window_size))
++            position_ids += list(range(bos_pos - window_size * repeat_times))
++            # need consider additional bos_id after input_ids
++            mask_pos = position_ids[-1]
++            position_ids += [mask_pos] * (max_output_length + 1)
++
++            block_repeat_times = max_output_length // (window_size - 1)
++            additional_block_position_ids = []
++            for _ in range(block_repeat_times):
++                additional_block_position_ids += list(range(1, window_size))
++            additional_block_position_ids += list(
++                range(1, max_output_length + 2 - (window_size - 1) * block_repeat_times)
++            )
++            block_position_ids = block_position_ids + additional_block_position_ids
++
++        position_ids = [position_ids, block_position_ids]
++        return position_ids
++
++    def _build_inputs_for_generation(
++        self,
++        input_ids: List[int],
++        max_input_length=None,
++        left_truncate=True,
++        max_output_length=1024,
++        rotary_type="none",
++        unidirectional_attention: bool = True,
++        attention_dtype=None,
++        **kwargs,
++    ):
++        if max_input_length and len(input_ids) > max_input_length:
++            if left_truncate:
++                input_ids = input_ids[-max_input_length:]
++            else:
++                input_ids = input_ids[:max_input_length]
++
++        is_left_padding = input_ids[0] == self.eos_token_id
++        if not unidirectional_attention:
++            if input_ids[0] != self.cls_token_id:
++                input_ids = [self.cls_token_id] + input_ids
++
++            if self.gmask_token_id not in set(input_ids):
++                input_ids = input_ids + [self.gmask_token_id]
++
++            mask_pos = input_ids.index(self.gmask_token_id)
++            sep = len(input_ids)
++        else:
++            if self.add_bos_token:
++                input_ids = input_ids + [self.bos_token_id]
++                if self.eos_token_id in input_ids:
++                    mask_pos = input_ids.index(self.eos_token_id) - 1
++                else:
++                    mask_pos = len(input_ids) - 1
++                sep = len(input_ids) - 1
++            else:
++                sep = len(input_ids)
++                if self.eos_token_id in input_ids:
++                    if is_left_padding:
++                        ori_input_ids = input_ids
++                        input_ids = input_ids[::-1]
++                    mask_pos = input_ids.index(self.eos_token_id) - 1
++                    mask_pos = max(0, mask_pos)  # for empty sequence
++                    if is_left_padding:
++                        input_ids = ori_input_ids
++                        mask_pos = sep - 1 - mask_pos  # the first non-eos token
++
++                else:
++                    mask_pos = len(input_ids) - 1
++
++        position_ids = self._build_position_ids(mask_pos, sep, max_output_length, rotary_type, **kwargs)
++
++        if is_left_padding:
++            position_ids[0] = [max(0, i - mask_pos) for i in range(len(position_ids[0]))]
++
++        # 后面input_ids要加一个bos_id
++        total_length = sep + max_output_length
++        if self.add_bos_token:
++            total_length += 1
++
++        def build_mask_matrix(seq_length, sep, mask_pos, unidirectional_attention):
++            # 长序列使用bool类型节省显存
++            if unidirectional_attention:
++                attention_mask = torch.ones([seq_length, seq_length], dtype=attention_dtype)
++                attention_mask = torch.tril(attention_mask)
++                if is_left_padding:
++                    attention_mask[:, :mask_pos] = 0
++                else:
++                    attention_mask[:, mask_pos + 1 : sep] = 0
++            else:
++                attention_mask = torch.zeros([seq_length, seq_length], dtype=attention_dtype)
++                attention_mask[:, : mask_pos + 1] = 1
++                for i in range(sep, total_length):
++                    attention_mask[i, sep : i + 1] = 1
++            return attention_mask
++
++        if self.add_bos_token:
++            attention_mask = build_mask_matrix(total_length, sep + 1, mask_pos, unidirectional_attention)
++        else:
++            attention_mask = build_mask_matrix(total_length, sep, mask_pos, unidirectional_attention)
++        attention_mask = torch.unsqueeze(attention_mask, dim=0)
++        attention_mask = torch.unsqueeze(attention_mask, dim=1)
++        if attention_dtype is None:
++            attention_mask = attention_mask.long()
++        inputs = {
++            "input_ids": torch.Tensor([input_ids]).long(),
++            "position_ids": torch.Tensor([position_ids]).long(),
++            "attention_mask": attention_mask,
++        }
++        return BatchEncoding(inputs)
++
++    def build_inputs_for_generation(
++        self,
++        input_ids: Union[List[int], List[List[int]], torch.Tensor],
++        max_input_length=None,
++        left_truncate=True,
++        max_output_length=1024,
++        rotary_type="1d",
++        unidirectional_attention=True,
++        attention_dtype=None,
++        **kwargs,
++    ):
++        if isinstance(input_ids, torch.Tensor):
++            input_ids = input_ids.tolist()
++
++        if isinstance(input_ids[0], list):
++            input_ids_list = []
++            position_ids_list = []
++            attention_mask_list = []
++            for _input_ids in input_ids:
++                inputs = self._build_inputs_for_generation(
++                    _input_ids,
++                    max_input_length=max_input_length,
++                    left_truncate=left_truncate,
++                    max_output_length=max_output_length,
++                    rotary_type=rotary_type,
++                    unidirectional_attention=unidirectional_attention,
++                    attention_dtype=attention_dtype,
++                    **kwargs,
++                )
++                input_ids_list.append(inputs['input_ids'])
++                position_ids_list.append(inputs['position_ids'])
++                attention_mask_list.append(inputs["attention_mask"])
++
++            max_ids_length = max([input.size(1) for input in input_ids_list])
++
++            for i in range(len(input_ids)):
++                cur_ids_length = input_ids_list[i].size(1)
++                if cur_ids_length < max_ids_length:
++                    # pad input ids
++                    pad_input_ids = input_ids_list[i].new_zeros((1, max_ids_length - cur_ids_length))
++                    input_ids_list[i] = torch.cat([pad_input_ids, input_ids_list[i]], dim=-1)
++
++                    # pad postition ids with left pad
++                    # 0, 1, 2, 3, 4 ... -> 0, ..., 0, 1, 2, 3, 4, ...
++                    pad_position_ids = input_ids_list[i].new_zeros((1, 2, max_ids_length - cur_ids_length))
++                    position_ids_list[i] = torch.cat([pad_position_ids, position_ids_list[i]], dim=-1)
++
++                    # pad generation attention mask with left and bottom pad
++                    new_attention_mask = input_ids_list[i].new_zeros(
++                        1,
++                        1,
++                        max_ids_length + max_output_length,
++                        max_ids_length + max_output_length,
++                    )
++                    new_attention_mask[
++                        :,
++                        :,
++                        max_ids_length - cur_ids_length :,
++                        max_ids_length - cur_ids_length :,
++                    ] = attention_mask_list[i]
++                    attention_mask_list[i] = new_attention_mask.contiguous()
++
++            input_ids_list = torch.cat(input_ids_list, dim=0)
++            position_ids_list = torch.cat(position_ids_list, dim=0)
++            attention_mask_list = torch.cat(attention_mask_list, dim=0)
++
++            inputs = {
++                "input_ids": input_ids_list,
++                "position_ids": position_ids_list,
++                "attention_mask": attention_mask_list,
++            }
++
++            return BatchEncoding(inputs)
++        else:
++            return self._build_inputs_for_generation(
++                input_ids,
++                max_input_length=max_input_length,
++                left_truncate=left_truncate,
++                max_output_length=max_output_length,
++                rotary_type=rotary_type,
++                unidirectional_attention=unidirectional_attention,
++                **kwargs,
++            )
++
++    def _build_inputs_for_train(
++        self,
++        inputs: Union[str, List[str]],
++        outputs: Union[str, List[str]],
++        new_conversation_offset: List[int] = None,
++        max_length: int = 2048,
++        rotary_type: str = "1d",
++        left_truncate: bool = True,
++        unidirectional_attention: bool = True,
++        isolation_position_ids: bool = False,
++        padding: bool = True,
++        use_fa2: bool = True,
++        use_packed: bool = True,
++        use_baichuan_packed: bool = False,
++        skip_truncated_turn: bool = False,
++        return_attention_mask: bool = True,
++        multiturn_loss: List[bool] = None,
++    ):
++        r"""
++        Build tensor input for model training. If inputs and outputs are list, will pack them.
++
++        Args:
++            inputs (str, List[str], List[Dict], List[List[Dict]]): the input prompts.
++            outputs (str, List[str]): the output responses.
++            max_length (int, Optional): the maximum length of the final input ids for training. Default: 2048
++            rotary_type (str, Optional): the rotary type of position embedding. Default: 1d
++            left_truncate (bool, Optional): whether truncate the inputs from left. Default: True
++            use_fa2 (bool, Optional): whether to build attention mask under flash attention 2.
++            new_conversation_offset (List[int], Optional): 第idx条样本是全新的对话，[0, 1]代表：inputs[0]和outputs[0]是一个对话，inputs[1]和outputs[1]是一个对话.
++        """
++        if use_packed and use_baichuan_packed and unidirectional_attention:
++            return self._build_baichuan_inputs_for_train(
++                inputs=inputs,
++                outputs=outputs,
++                new_conversation_offset=new_conversation_offset,
++                max_length=max_length,
++                rotary_type=rotary_type,
++                left_truncate=left_truncate,
++                skip_truncated_turn=skip_truncated_turn,
++                use_fa2=use_fa2,
++                padding=padding,
++                multiturn_loss=multiturn_loss,
++            )
++        if isinstance(inputs, str):
++            inputs = [inputs]
++        if isinstance(outputs, str):
++            outputs = [outputs]
++
++        assert len(inputs) == len(outputs)
++
++        input_ids = [self(item)['input_ids'] for item in inputs]
++        output_ids = [self(item)['input_ids'] for item in outputs]
++
++        packed_input_ids = []
++        packed_output_ids = []
++        if new_conversation_offset is None:
++            new_conversation_offset = list(range(0, len(inputs)))
++        assert 0 in new_conversation_offset, f"没有0，请检查new_conversation_offset: {new_conversation_offset}"
++        current_len = 0
++
++        for idx, (input, output) in enumerate(zip(input_ids, output_ids)):
++            num_special_tokens = 0
++            if not unidirectional_attention:
++                if idx in new_conversation_offset:
++                    # cls and gmask
++                    num_special_tokens += 2
++                else:
++                    # only gmask
++                    num_special_tokens += 1
++            else:
++                # sop and eos
++                if self.add_bos_token:
++                    num_special_tokens += 2
++                else:
++                    num_special_tokens += 1
++
++            # truncate
++            if len(input) + len(output) + current_len > max_length - num_special_tokens:
++                if not use_packed or use_fa2 and unidirectional_attention:
++                    attention_mask = torch.tensor(0)
++                elif use_fa2:
++                    attention_mask = -1 * torch.ones([2, max_length])
++                else:
++                    attention_mask = torch.tril(torch.ones([max_length, max_length]))
++                # 返回一个空的样本，该样本不参与训练
++                default_return = {
++                    'input_ids': (torch.ones(max_length) * self.eos_token_id).long(),
++                    'position_ids': torch.zeros(2, max_length).long(),
++                    'attention_mask': (attention_mask.long()),
++                    'labels': (torch.ones(max_length) * -100).long(),
++                }
++                # 如果不截断，直接返回
++                if skip_truncated_turn:
++                    if current_len == 0:
++                        return default_return
++                    else:
++                        break
++                left_len = max_length - num_special_tokens - current_len
++                # 如果截断，只截断prompt
++                if left_len - len(output) > 0:
++                    if left_truncate:
++                        input = input[-(left_len - len(output)) :]
++                    else:
++                        input = input[: left_len - len(output)]
++                else:
++                    # response超过left_len，直接返回
++                    if current_len == 0:
++                        return default_return
++                    else:
++                        break
++            if unidirectional_attention:
++                packed_input_ids.append(list(input))
++            else:
++                if num_special_tokens == 4:
++                    packed_input_ids.append([self.cls_token_id] + list(input) + [self.gmask_token_id])
++                else:
++                    packed_input_ids.append(list(input) + [self.gmask_token_id])
++
++            packed_output_ids.append(list(output) + [self.eos_token_id])
++            current_len += len(input) + len(output) + num_special_tokens
++
++        assert current_len <= max_length
++
++        if use_packed:
++            # pack模式
++            def build_mask_matrix(seq_length, sep):
++                # https://github.com/pytorch/pytorch/issues/101932, fix triu/tril bf16 support
++                m = torch.ones((1, seq_length, seq_length))
++                mask = torch.arange(1, m.shape[-1] + 1).reshape(1, -1, 1).to(m.device)
++                ids = torch.arange(1, m.shape[-1] + 1).reshape(1, 1, -1).expand(1, m.shape[-1], -1).to(m.device)
++                m = (ids <= mask).type_as(m)
++
++                m[0, :, : int(sep)] = 1
++                m = m.squeeze(0)
++                return m
++
++            tokens = []
++            attention_mask_list = []
++            input_length_list = []
++            position_id_list = []
++            block_position_id_list = []
++            for input, output in zip(packed_input_ids, packed_output_ids):
++                if self.add_bos_token:
++                    data = input + [self.sop_token_id] + output
++                    mask_pos = len(input) - 1
++                else:
++                    data = input + output
++                    mask_pos = len(input) - 2
++                if return_attention_mask:
++                    if unidirectional_attention:
++                        attention_mask = build_mask_matrix(len(data), 0)
++                    else:
++                        attention_mask = build_mask_matrix(len(data), len(input))
++                    attention_mask = attention_mask.squeeze((0, 1))
++
++                    attention_mask_list.append(attention_mask)
++                input_length_list.append(len(input))
++                tokens += data
++
++                sop_pos = mask_pos + 1
++                position_ids, block_position_ids = self._build_position_ids(
++                    mask_pos=mask_pos, bos_pos=sop_pos, max_output_length=len(output), rotary_type=rotary_type
++                )
++
++                position_id_list.append(position_ids)
++                block_position_id_list.append(block_position_ids)
++
++            labels = []
++            for i in range(len(packed_input_ids)):
++                if self.add_bos_token:
++                    labels += [-100] * len(packed_input_ids[i]) + packed_output_ids[i] + [-100]
++                else:
++                    labels += [-100] * (len(packed_input_ids[i]) - 1) + packed_output_ids[i] + [-100]
++
++            total_len = 0
++            if use_fa2:
++                pack_attention_mask = -1 * torch.ones([2, current_len])
++            else:
++                pack_attention_mask = torch.tril(torch.ones([current_len, current_len]))
++
++            pack_position_ids = []
++            pack_block_position_ids = []
++            total_len = 0
++            max_index = 0
++            for i in range(len(position_id_list)):
++
++                if use_fa2:
++                    pack_attention_mask[0][i] = total_len
++                    pack_attention_mask[1][i] = total_len + input_length_list[i]
++                else:
++                    pack_attention_mask[
++                        total_len : total_len + attention_mask.shape[0],
++                        total_len : total_len + attention_mask.shape[0],
++                    ] = attention_mask
++                position_ids = [pid + max_index for pid in position_id_list[i]]
++                block_position_ids = block_position_id_list[i]
++                pack_position_ids.extend(position_ids)
++                pack_block_position_ids.extend(block_position_ids)
++                if not isolation_position_ids:
++                    max_index = pack_position_ids[-1] + 1
++                total_len += len(position_id_list[i])
++            position_ids = [pack_position_ids, pack_block_position_ids]
++        else:
++            # 单输入模式
++            # 真多轮下，一条样本可能会有好几轮对话，此时需要获取第一条样本的结束位置
++            if len(new_conversation_offset) > 1:
++                end_idx = new_conversation_offset[1]
++            else:
++                end_idx = 1
++            input, output = list(itertools.chain(*packed_input_ids[:end_idx])), list(
++                itertools.chain(*packed_output_ids[:end_idx])
++            )
++            if self.add_bos_token:
++                tokens = input + [self.sop_token_id] + output
++            else:
++                tokens = input + output
++
++            if self.add_bos_token:
++                labels = [-100] * len(input) + output + [-100]
++                position_ids = self._build_position_ids(
++                    mask_pos=len(input) - 1, bos_pos=len(input), max_output_length=len(output), rotary_type=rotary_type
++                )
++            else:
++                labels = [-100] * (len(input) - 1) + output + [-100]
++                position_ids = self._build_position_ids(
++                    mask_pos=len(input) - 2,
++                    bos_pos=len(input) - 1,
++                    max_output_length=len(output),
++                    rotary_type=rotary_type,
++                )
++            attention_mask = len(input)
++        assert current_len == len(tokens)
++
++        # 最大长度补全
++        if max_length > 0 and len(tokens) < max_length and padding:
++            pad_length = max_length - len(tokens)
++            tokens += [self.pad_token_id] * pad_length
++            labels.extend([-100] * pad_length)
++            position_ids[0] += [0] * pad_length
++            position_ids[1] += [0] * pad_length
++
++            if use_packed:
++                if use_fa2:
++                    new_attention_mask = -1 * torch.ones([2, max_length])
++                    new_attention_mask[:, :current_len] = pack_attention_mask
++                else:
++                    new_attention_mask = torch.tril(torch.ones([max_length, max_length]))
++                    new_attention_mask[:current_len, :current_len] = pack_attention_mask
++                pack_attention_mask = new_attention_mask.contiguous()
++
++        assert len(tokens) == len(labels)
++
++        if max_length > 0 and padding:
++            assert len(tokens) == max_length
++
++        if use_fa2 and unidirectional_attention:
++            # pack_attention_mask = torch.zeros([1], dtype=torch.long)
++            pack_attention_mask = torch.tensor(0)
++
++        if use_packed:
++            if not use_fa2:
++                attention_mask = pack_attention_mask.unsqueeze(0).long()
++            else:
++                attention_mask = pack_attention_mask
++        else:
++            attention_mask = torch.tensor(attention_mask).long()
++        return {
++            'input_ids': torch.tensor(tokens).long(),
++            'position_ids': torch.tensor(position_ids).long(),
++            'attention_mask': attention_mask,
++            'labels': torch.tensor(labels).long(),
++        }
++
++    def _build_baichuan_inputs_for_train(
++        self,
++        inputs: Union[str, List[str]],
++        outputs: Union[str, List[str]],
++        new_conversation_offset: List[int] = None,
++        max_length: int = 2048,
++        rotary_type: str = "1d",
++        left_truncate: bool = True,
++        skip_truncated_turn: bool = True,
++        use_fa2: bool = True,
++        padding: bool = True,
++        multiturn_loss: List[bool] = None,
++    ):
++        '''
++        input:  <role> HUMAN </role> u1 <role>  ASSISTANT </role> a11 a12            <role> HUMAN </role> u2 <role> ASSISTANT </role> a21 a22           <|endoftext|> <role> HUMAN </role> u1 <role>  ASSISTANT </role> a11 a12            <role> HUMAN </role> u2 <role> ASSISTANT </role> a21 a22           <|endoftext|>
++        output: x      x     x       x  x       x         a11     a12 <|endoftext|>  x      x     x       x  x      x         a21     a22 <|endoftext|> x             x      x     x       x  x       x         a11     a12 <|endoftext|>  x      x     x       x  x      x         a21     a22 <|endoftext|> x
++        只适用真多轮+pack数据训练单向模型，需要打开use_true_multiturn
++        '''
++        if isinstance(inputs, str):
++            inputs = [inputs]
++        if isinstance(outputs, str):
++            outputs = [outputs]
++        assert len(inputs) == len(outputs)
++
++        input_ids = [self(item)['input_ids'] for item in inputs]
++        output_ids = [self(item)['input_ids'] for item in outputs]
++
++        packed_input_ids = []
++        packed_output_ids = []
++        packed_multiturn_loss = []
++
++        if new_conversation_offset is None:
++            new_conversation_offset = list(range(0, len(inputs)))
++        assert 0 in new_conversation_offset, f"没有0，请检查new_conversation_offset: {new_conversation_offset}"
++        current_len = 0
++
++        for idx, (input, output) in enumerate(zip(input_ids, output_ids)):
++            num_special_tokens = 0
++            if idx != 0 and idx in new_conversation_offset:
++                # 在input_ids加入eos，只有第0条样本不加
++                num_special_tokens += 1
++
++            # truncate
++            if len(input) + len(output) + current_len > max_length - num_special_tokens:
++                if use_fa2:
++                    attention_mask = torch.tensor(0)
++                else:
++                    attention_mask = torch.tril(torch.ones([max_length, max_length]))
++                # 返回一个空的样本，该样本不参与训练
++                default_return = {
++                    'input_ids': (torch.ones(max_length) * self.eos_token_id).long(),
++                    'position_ids': torch.zeros(2, max_length).long(),
++                    'attention_mask': (attention_mask.long()),
++                    'labels': (torch.ones(max_length) * -100).long(),
++                }
++
++                # 如果不截断，直接返回
++                if skip_truncated_turn:
++                    if current_len == 0:
++                        return default_return
++                    else:
++                        break
++                left_len = max_length - num_special_tokens - current_len
++                # 如果截断，只截断prompt
++                if left_len - len(output) > 0:
++                    if left_truncate:
++                        input = input[-(left_len - len(output)) :]
++                    else:
++                        input = input[: left_len - len(output)]
++                else:
++                    # response超过left_len，直接返回
++                    if current_len == 0:
++                        return default_return
++                    else:
++                        break
++            # 这里拼的是input_ids
++            if num_special_tokens == 1:
++                packed_input_ids.append([self.eos_token_id] + list(input))
++            else:
++                packed_input_ids.append(list(input))
++            packed_output_ids.append(list(output))
++            packed_multiturn_loss.append(multiturn_loss[idx])
++            current_len += len(input) + len(output) + num_special_tokens
++        assert current_len <= max_length
++
++        def build_mask_matrix(seq_length, sep):
++            # https://github.com/pytorch/pytorch/issues/101932, fix triu/tril bf16 support
++            m = torch.ones((1, seq_length, seq_length))
++            mask = torch.arange(1, m.shape[-1] + 1).reshape(1, -1, 1).to(m.device)
++            ids = torch.arange(1, m.shape[-1] + 1).reshape(1, 1, -1).expand(1, m.shape[-1], -1).to(m.device)
++            m = (ids <= mask).type_as(m)
++
++            m[0, :, : int(sep)] = 1
++            m = m.squeeze(0)
++            return m
++
++        tokens = []
++        attention_mask_list = []
++        position_id_list = []
++        block_position_id_list = []
++        token_lens = []
++        for input, output in zip(packed_input_ids, packed_output_ids):
++            data = input + output
++            if not use_fa2:
++                attention_mask = build_mask_matrix(len(data), 0)
++                attention_mask_list.append(attention_mask)
++            tokens += data
++            token_lens.append(len(data))
++
++            position_ids, block_position_ids = self._build_position_ids(
++                mask_pos=len(input) - 2, bos_pos=len(input) - 1, max_output_length=len(output), rotary_type=rotary_type
++            )
++
++            position_id_list.append(position_ids)
++            block_position_id_list.append(block_position_ids)
++
++        labels = []
++        for i in range(len(packed_input_ids)):
++            if packed_multiturn_loss[i]:
++                labels += [-100] * (len(packed_input_ids[i]) - 1) + packed_output_ids[i] + [self.eos_token_id]
++            else:
++                labels += [-100] * (len(packed_input_ids[i]) - 1) + [-100] * len(
++                    packed_output_ids[i] + [self.eos_token_id]
++                )
++
++        total_len = 0
++        if use_fa2:
++            pack_attention_mask = torch.Tensor([[0], [1]])
++        else:
++            pack_attention_mask = torch.tril(torch.ones([max_length, max_length]))
++
++        pack_position_ids = []
++        pack_block_position_ids = []
++        total_len = 0
++        max_index = 0
++        for i in range(len(token_lens)):
++            if not use_fa2:
++                attention_mask = attention_mask_list[i]
++                pack_attention_mask[
++                    total_len : total_len + attention_mask.shape[0], total_len : total_len + attention_mask.shape[0]
++                ] = attention_mask
++            position_ids = [pid + max_index for pid in position_id_list[i]]
++            block_position_ids = block_position_id_list[i]
++            pack_position_ids.extend(position_ids)
++            pack_block_position_ids.extend(block_position_ids)
++            max_index = pack_position_ids[-1] + 1
++            total_len += token_lens[i]
++        position_ids = [pack_position_ids, pack_block_position_ids]
++
++        if max_length > 0 and len(tokens) < max_length and padding:
++            pad_length = max_length - len(tokens)
++            tokens += [self.pad_token_id] * pad_length
++            labels.extend([-100] * pad_length)
++            position_ids[0] += [0] * pad_length
++            position_ids[1] += [0] * pad_length
++
++        assert len(tokens) == len(labels)
++
++        if not use_fa2:
++            attention_mask = pack_attention_mask.unsqueeze(0).long()
++        else:
++            attention_mask = torch.tensor(0)
++        return {
++            'input_ids': torch.tensor(tokens).long(),
++            'position_ids': torch.tensor(position_ids).long(),
++            'attention_mask': attention_mask,
++            'labels': torch.tensor(labels).long(),
++        }
++
++    def build_inputs_for_train(
++        self,
++        data: Union[Dict, List[Dict]],
++        new_conversation_offset: List[int] = None,
++        chat_format="antglm_chat",
++        is_chat_format=True,  # 如果传入的是字符串，用于说明是否已经是
++        use_true_multiturn=False,
++        max_length: int = 2048,
++        rotary_type: str = "1d",
++        left_truncate: bool = True,
++        unidirectional_attention: bool = True,
++        isolation_position_ids: bool = False,
++        padding: bool = True,
++        use_fa2: bool = True,
++        use_packed: bool = True,
++        use_baichuan_packed: bool = False,
++        skip_truncated_turn: bool = False,
++        return_attention_mask: bool = True,
++    ):
++        r"""
++        Build tensor input for model training. If inputs and outputs are list, will pack them.
++
++        Args:
++            inputs (str, List[str], List[Dict], List[List[Dict]]): the input prompts.
++            outputs (str, List[str]): the output responses.
++            new_conversation_offset (List[int]): the offset index of the new conversation turn.
++            is_chat_format (bool): whether the input is already chatml format
++            max_length (int, Optional): the maximum length of the final input ids for training. Default: 2048
++            rotary_type (str, Optional): the rotary type of position embedding. Default: 1d
++            left_truncate (bool, Optional): whether truncate the inputs from left. Default: True
++            use_fa2 (bool, Optional): whether to build attention mask under flash attention 2.
++        """
++        if isinstance(data, List):
++            # chatml list
++            _inputs = []
++            _outputs = []
++            new_conversation_offset = []
++            for _input in data:
++                if use_true_multiturn:
++                    chat = self._chat_from_json(_input, chat_format=chat_format)
++                    chat_data = chat.prompt_pack
++                    new_conversation_offset.append(len(_inputs))
++                    _inputs.extend(chat_data['input'])
++                    _outputs.extend(chat_data['output'])
++                else:
++                    _conversation = _convert_to_conversation(_input)
++                    assert is_assistant(_conversation[-1])
++
++                    _inputs.append(
++                        self.apply_chat_template(_conversation[:-1], tokenize=False, add_generation_prompt=True)
++                    )
++                    _outputs.append(_conversation[-1]['content'])
++
++            return self._build_inputs_for_train(
++                inputs=_inputs,
++                outputs=_outputs,
++                new_conversation_offset=new_conversation_offset,
++                max_length=max_length,
++                rotary_type=rotary_type,
++                left_truncate=left_truncate,
++                unidirectional_attention=unidirectional_attention,
++                isolation_position_ids=isolation_position_ids,
++                padding=padding,
++                use_fa2=use_fa2,
++                use_packed=use_packed,
++                use_baichuan_packed=use_baichuan_packed,
++                skip_truncated_turn=skip_truncated_turn,
++                return_attention_mask=return_attention_mask,
++            )
++        elif isinstance(data, Dict):
++            if 'messages' in data:
++                # chatml format
++                if use_true_multiturn:
++                    chat = self._chat_from_json(data, chat_format=chat_format)
++                    chat_data = chat.prompt_pack
++                else:
++                    _conversation = _convert_to_conversation(data)
++                    assert is_assistant(_conversation[-1])
++
++                    chat_data = {
++                        "input": self.apply_chat_template(
++                            _conversation[:-1], tokenize=False, add_generation_prompt=True
++                        ),
++                        "output": _conversation[-1]['content'],
++                    }
++
++                return self._build_inputs_for_train(
++                    inputs=chat_data['input'],
++                    outputs=chat_data['output'],
++                    max_length=max_length,
++                    rotary_type=rotary_type,
++                    left_truncate=left_truncate,
++                    unidirectional_attention=unidirectional_attention,
++                    isolation_position_ids=isolation_position_ids,
++                    padding=padding,
++                    use_fa2=use_fa2,
++                    use_packed=use_packed,
++                    use_baichuan_packed=use_baichuan_packed,
++                    skip_truncated_turn=skip_truncated_turn,
++                    return_attention_mask=return_attention_mask,
++                )
++            else:
++                inputs = data['input']
++                outputs = data['output']
++                multiturn_loss = data.get("multiturn_loss", None)
++
++                if isinstance(inputs, str):
++                    inputs = [inputs]
++                if isinstance(outputs, str):
++                    outputs = [outputs]
++
++                if not is_chat_format and chat_format:
++                    inputs = [
++                        self.apply_chat_template(
++                            [{"role": "HUMAN", "content": item}], tokenize=False, chat_format=chat_format
++                        )
++                        for item in inputs
++                    ]
++
++                return self._build_inputs_for_train(
++                    inputs=inputs,
++                    outputs=outputs,
++                    new_conversation_offset=new_conversation_offset,
++                    max_length=max_length,
++                    rotary_type=rotary_type,
++                    left_truncate=left_truncate,
++                    unidirectional_attention=unidirectional_attention,
++                    isolation_position_ids=isolation_position_ids,
++                    padding=padding,
++                    use_fa2=use_fa2,
++                    use_packed=use_packed,
++                    use_baichuan_packed=use_baichuan_packed,
++                    skip_truncated_turn=skip_truncated_turn,
++                    return_attention_mask=return_attention_mask,
++                    multiturn_loss=multiturn_loss,
++                )
++
+diff --git a/megatron/training/tokenizer/tokenizer.py b/megatron/training/tokenizer/tokenizer.py
+index 5cf222ccc..85d70301a 100644
+--- a/megatron/training/tokenizer/tokenizer.py
++++ b/megatron/training/tokenizer/tokenizer.py
+@@ -16,6 +16,7 @@ from .bert_tokenization import FullTokenizer as FullBertTokenizer
+ from .gpt2_tokenization import GPT2Tokenizer
+ from megatron.training.tokenizer.multimodal_tokenizer import MultimodalTokenizer
+ from megatron.training.tokenizer.sft_tokenizer import SFTTokenizer
++from .bailing_sft_tokenizer import _GLMMegatronTokenizer
+ 
+ 
+ def build_tokenizer(args, **kwargs):
+@@ -95,13 +96,29 @@ def build_tokenizer(args, **kwargs):
+             args.force_system_message,
+         )
+     elif args.tokenizer_type == "SFTTokenizer":
+-        tokenizer = SFTTokenizer(
++        # tokenizer = SFTTokenizer(
++        #     args.tokenizer_model,
++        #     args.sft_tokenizer_prompt_format, 
++        # )
++        tokenizer = _GLMMegatronTokenizer(
+             args.tokenizer_model,
+-            args.sft_tokenizer_prompt_format, 
++            True
+         )
+     elif args.tokenizer_type == 'NullMultimodalTokenizer':
+         assert args.vocab_size is not None
+         tokenizer = _NullMultimodalTokenizer(args.vocab_size)
++    elif args.tokenizer_type == 'BailingTokenizer':
++        assert args.tokenizer_model is not None
++        from .tokenization_bailing import BailingTokenizer
++        # tokenizer = BailingTokenizer.from_pretrained(args.tokenizer_model)
++        tokenizer = _GLMMegatronTokenizer(
++            args.tokenizer_model,
++            True
++        )
++        # Add vocab size (if not already set from a checkpoint).
++        if getattr(args, "padded_vocab_size", None) is None:
++            args.padded_vocab_size = _vocab_size_with_padding(tokenizer.vocab_size, args)
++        return tokenizer
+     else:
+         raise NotImplementedError('{} tokenizer is not ' 'implemented.'.format(args.tokenizer_type))
+ 
+diff --git a/megatron/training/training.py b/megatron/training/training.py
+index e26977aef..7687f3abf 100644
+--- a/megatron/training/training.py
++++ b/megatron/training/training.py
+@@ -113,6 +113,7 @@ from .utils import (
+     report_memory,
+     unwrap_model,
+     update_use_dist_ckpt,
++    print_param_dtypes,
+ )
+ from .global_vars import (
+     destroy_global_vars,
+@@ -1070,8 +1071,21 @@ def get_model(model_provider_func, model_type=ModelType.encoder_or_decoder, wrap
+ 
+     # Fp16 conversion.
+     if args.fp16 or args.bf16:
++        param_pattern = getattr(args, "skip_casting_dtype_for_param_pattern", None)
++        if param_pattern and not isinstance(param_pattern, list):
++            param_pattern = [param_pattern]
++        ori_param_dtypes = []
++        if param_pattern:
++            from .utils import record_param_original_dtype
++            ori_param_dtypes = [record_param_original_dtype(model_module, param_pattern) for model_module in model]
++            print_rank_0(f"matched original param_dtypes:{ori_param_dtypes}")
+         config = get_model_config(model[0])
+         model = [Float16Module(config, model_module) for model_module in model]
++        if param_pattern and any(ori_param_dtypes):
++            from .utils import recover_param_dtype, print_param_dtypes
++            for module, param_dtype in zip(model, ori_param_dtypes):
++                recover_param_dtype(module.module, "", param_dtype)
++            print_param_dtypes(model)
+ 
+     # Before TE2.x: The model_module.bfloat16()/model_module.half() above will call the inplace
+     #               copy of TE's Float8Tensor, which will write an unwanted value (amax calculated
+@@ -2760,6 +2774,9 @@ def build_train_valid_test_data_loaders(build_train_valid_test_datasets_provider
+     args.do_train = getattr(args, "do_train", False) or flags[0].item()
+     args.do_valid = getattr(args, "do_valid", False) or flags[1].item()
+     args.do_test = getattr(args, "do_test", False) or flags[2].item()
++    # train_dataloader.dataset.config.tokenizer.all_special_ids
++    # train_dataloader.dataset.config.tokenizer.decode(t_data['tokens'][0], skip_special_tokens=False)
++
+ 
+     return train_dataloader, valid_dataloader, test_dataloader
+ 
+diff --git a/megatron/training/utils.py b/megatron/training/utils.py
+index 698c5a07d..087214ae4 100644
+--- a/megatron/training/utils.py
++++ b/megatron/training/utils.py
+@@ -584,3 +584,90 @@ def get_batch_on_this_tp_rank(data_iterator):
+ 
+ def update_use_dist_ckpt(args):
+     args.use_dist_ckpt = args.ckpt_format != "torch"
++
++
++def print_param_dtypes(module, prefix="", print_fn=print_rank_0):
++    if isinstance(module, list):
++        module = module[0]  # only peek the first module when meets list
++    if hasattr(module, "named_buffers"):
++        for buffer_name, buffer in module.named_buffers():
++            full_name = f"{prefix}.{buffer_name}"
++            print_fn(f"  [buffer]{full_name}: {buffer.dtype}")
++    for module_name, module_param in module.named_parameters():
++        full_name = f"{prefix}.{module_name}"
++        if hasattr(module_param, "children") and any(module_param.children()):
++            print_param_dtypes(module_param, full_name)
++        else:
++            print_fn(f"  [param]{full_name}: {module_param.data.dtype}")
++
++
++def recover_param_dtype(module, prefix, ori_param_dtypes):
++    """Recover the dtype of parameters or buffers to the original type in ori_param_dtypes"""
++    if not ori_param_dtypes:
++        return
++    tmp_prefix = f"{prefix}." if prefix else ""
++    for module_name, module_param in module.named_parameters():
++        full_name = f"{tmp_prefix}{module_name}"
++        if hasattr(module_param, "children") and any(module_param.children()):
++            recover_param_dtype(module_param, full_name, ori_param_dtypes)
++        else:
++            for k, v in ori_param_dtypes.items():
++                if full_name == k:
++                    print_rank_0(f"casting dtype of module {prefix}{k} to {v}")
++                    module_param.data = module_param.data.to(v)
++    if hasattr(module, "named_buffers"):
++        for buffer_name, buffer in module.named_buffers():
++            full_name = f"{tmp_prefix}{buffer_name}"
++            for k, v in ori_param_dtypes.items():
++                if full_name == k:
++                    print_rank_0(f"casting dtype of module {prefix}{k} to {v}")
++                    buffer.data = buffer.data.to(v)
++
++
++def record_param_original_dtype(module, param_patterns: list):
++    """
++    Record the original dtype of parameters or buffers.
++    Args:
++        module: module
++        param_patterns (List[str]): parameters patterns
++    Returns: a dict where the key is the name of modules matching para_patterns,
++     and the corresponding value is dtype.
++    """
++    if param_patterns is None or len(param_patterns) == 0:
++        return {}
++    def get_param_dtypes(inner_module, prefix, res):
++        tmp_prefix = f"{prefix}." if prefix else ""
++        for module_name, module_param in inner_module.named_parameters():
++            full_name = f"{tmp_prefix}{module_name}"
++            if hasattr(module_param, "children") and any(module_param.children()):
++                get_param_dtypes(module_param, full_name, res)
++            else:
++                res.update({full_name: module_param.data.dtype})
++    def get_buffer_dtypes(inner_module, prefix, res):
++        tmp_prefix = f"{prefix}." if prefix else ""
++        for module_name, module_buffer in inner_module.named_buffers():
++            full_name = f"{tmp_prefix}{module_name}"
++            if hasattr(module_buffer, "children") and any(module_buffer.children()):
++                get_buffer_dtypes(module_buffer, full_name, res)
++            else:
++                res.update({full_name: module_buffer.dtype})
++    import re
++    patterns = [re.compile(p) for p in param_patterns]
++    all_param_dtypes = {}
++    all_buffer_dtypes = {}
++    get_param_dtypes(module, "", all_param_dtypes)
++    if hasattr(module, "named_buffers"):
++        get_buffer_dtypes(module, "", all_buffer_dtypes)
++    duplicate_keys = set(all_param_dtypes.keys()).intersection(all_buffer_dtypes.keys())
++    if duplicate_keys:
++        raise KeyError(f"Duplicate keys found in both parameter and buffer: {duplicate_keys}")
++    matched_param_dtypes = {}
++    for k, v in all_param_dtypes.items():
++        for pattern in patterns:
++            if pattern.match(k):
++                matched_param_dtypes.update({k: v})
++    for k, v in all_buffer_dtypes.items():
++        for pattern in patterns:
++            if pattern.match(k):
++                matched_param_dtypes.update({k: v})
++    return matched_param_dtypes
+diff --git a/pretrain_gpt.py b/pretrain_gpt.py
+index 16dd00883..8dc17508b 100644
+--- a/pretrain_gpt.py
++++ b/pretrain_gpt.py
+@@ -4,12 +4,14 @@
+ 
+ import datetime
+ import os
++import time
++
+ import torch
+ 
++from dataclasses import dataclass
+ from functools import partial
+ from typing import List, Optional, Tuple, Union
+ from megatron.core import parallel_state
+-from megatron.training import get_args
+ from megatron.training import inprocess_restart
+ from megatron.training import print_rank_0
+ from megatron.training import get_timers
+@@ -49,7 +51,7 @@ import megatron.legacy.model  # isort: skip
+ try:
+     from megatron.post_training.arguments import add_modelopt_args, modelopt_args_enabled
+     from megatron.post_training.loss_func import loss_func as loss_func_modelopt
+-    from megatron.post_training.model_provider import model_provider as model_provider_modelopt
++    from megatron.post_training.model_provider import model_provider_old as model_provider_modelopt
+ 
+     has_nvidia_modelopt = True
+ except ImportError:
+@@ -92,6 +94,12 @@ def _get_transformer_layer_spec(use_te, config):
+         )
+ 
+ 
++@dataclass
++class FlexibleVPPConfig:
++    pipeline_model_parallel_layout = None
++    mtp_num_layers = None
++
++
+ def model_provider(
+     pre_process=True, post_process=True, vp_stage: Optional[int] = None
+ ) -> Union[GPTModel, megatron.legacy.model.GPTModel]:
