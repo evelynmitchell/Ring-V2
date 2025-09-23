@@ -1,4 +1,4 @@
-# Ling-V2
+# Ring-V2
 <p align="center"><img src="./figures/ant-bailing.png" width="100"/></p>
 
 <p align="center">🤗 <a href="https://huggingface.co/inclusionAI">Hugging Face</a>&nbsp&nbsp | &nbsp&nbsp🤖 <a href="https://modelscope.cn/organization/inclusionAI">ModelScope</a></p>
