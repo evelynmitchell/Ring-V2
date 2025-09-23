@@ -5,7 +5,7 @@
 
 ## News
 * [2025-09]:🎉 Add [Ring-flash-2.0](https://huggingface.co/inclusionAI/Ring-flash-2.0) Model
-* [2025-89]:🎉 Add [Ring-mini-2.0](https://huggingface.co/inclusionAI/Ring-mini-2.0) Model
+* [2025-09]:🎉 Add [Ring-mini-2.0](https://huggingface.co/inclusionAI/Ring-mini-2.0) Model
 
 ## Introduction
 Ring-V2 is a family of  reasoning MoE LLMs with a range of sizes provided and open-sourced by InclusionAI, derived from [Ling-V2](https://github.com/inclusionAI/Ling-V2). These models achieve leading performance in complex reasoning at similar sizes, while maintaining high inference speed thanks to their highly sparse architecture.
@@ -188,7 +188,7 @@ We recommend you to use [Llama-Factory](https://github.com/hiyouga/LLaMA-Factory
 
 ## License
 
-This code repository is licensed under [the MIT License](https://github.com/inclusionAI/Ring-V2/blob/master/LICENCE).
+This code repository is licensed under [the MIT License](https://github.com/inclusionAI/Ring-V2/blob/master/LICENSE).
 
 ## Citation
 
