@@ -15,8 +15,8 @@ We are excited to announce the official open-source release of Ring-linear-V2 se
 
 |       **Model**        | **Context Length** |                                                                             **Download**                                                                             |
 |:----------------------:| :----------------: |:--------------------------------------------------------------------------------------------------------------------------------------------------------------------:|
-| Ring-flash-linear-2.0  |        128k         |  [🤗 HuggingFace](https://huggingface.co/inclusionAI/Ring-flash-2.0) <br>[🤖 ModelScope](https://www.modelscope.cn/models/inclusionAI/Ring-flash-linear-2.0)  |
-| Ring-mini-linear-2.0  |        128k         |  [🤗 HuggingFace](https://huggingface.co/inclusionAI/Ring-mini-2.0) <br>[🤖 ModelScope](https://www.modelscope.cn/models/inclusionAI/Ring-mini-linear-2.0)  |
+| Ring-flash-linear-2.0  |        128k         |  [🤗 HuggingFace](https://huggingface.co/inclusionAI/Ring-flash-linear-2.0) <br>[🤖 ModelScope](https://www.modelscope.cn/models/inclusionAI/Ring-flash-linear-2.0)  |
+| Ring-mini-linear-2.0  |        128k         |  [🤗 HuggingFace](https://huggingface.co/inclusionAI/Ring-mini-linear-2.0) <br>[🤖 ModelScope](https://www.modelscope.cn/models/inclusionAI/Ring-mini-linear-2.0)  |
 
 Note: If you are interested in previous version, please visit the past model collections in [Huggingface](https://huggingface.co/inclusionAI) or [ModelScope](https://modelscope.cn/organization/inclusionAI).
 
