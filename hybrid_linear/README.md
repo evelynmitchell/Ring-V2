@@ -23,6 +23,12 @@ Note: If you are interested in previous version, please visit the past model col
 ## Quickstart
 
 ### 🤗 Hugging Face Transformers
+Installation requirements:
+
+```shell
+pip install flash-linear-attention==0.3.2
+pip install transformers==4.56.1
+```
 
 Here is a code snippet to show you how to use the chat model with `transformers`:
 
@@ -82,12 +88,9 @@ print("*" * 30)
 
 We will later submit our model to SGLang official release, now we can prepare the environment following steps:
 ```shell
-pip3 install sglang==0.5.2rc0 sgl-kernel==0.3.7.post1
+pip3 install sgl-kernel==0.3.9.post2 vllm==0.10.2
 ```
-You can use docker image as well:
-```shell
-docker pull lmsysorg/sglang:v0.5.2rc0-cu126
-```
+
 Then you should install our sglang whl package:
 ```shell
 pip install ./whls/sglang-0.5.2-py3-none-any.whl
