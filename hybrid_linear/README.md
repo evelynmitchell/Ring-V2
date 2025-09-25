@@ -100,13 +100,12 @@ BF16 and FP8 models are supported by SGLang now, it depends on the dtype of the 
 - Start server:
 ```shell
 python -m sglang.launch_server \
-    --model-path $MODLE_PATH \
-    --host 0.0.0.0 --port $PORT \
+    --model-path <model_path> \
     --trust-remote-code \
-    --attention-backend fa3
+    --tp-size 1 \
+    --disable-radix-cache \
+    --json-model-override-args "{\"linear_backend\": \"seg_la\"}"
 ```
-MTP is supported for base model, and not yet for chat model. You can add parameter `--speculative-algorithm NEXTN`
-to start command.
 
 - Client:
 
