@@ -4,8 +4,7 @@
 <p align="center">🤗 <a href="https://huggingface.co/inclusionAI">Hugging Face</a>&nbsp&nbsp | &nbsp&nbsp🤖 <a href="https://modelscope.cn/organization/inclusionAI">ModelScope</a></p>
 
 ## News
-* [2025-09]:🎉 Add [Ring-flash-linear-2.0](https://huggingface.co/inclusionAI/Ring-flash-linear-2.0) Model
-* [2025-09]:🎉 Add [Ring-mini-linear-2.0](https://huggingface.co/inclusionAI/Ring-mini-linear-2.0) Model
+* [2025-09]:🎉 Add [Ring-hybrid-linear-2.0](https://github.com/inclusionAI/Ring-V2/tree/main/hybrid-linear) Series
 * [2025-09]:🎉 Add [Ring-flash-2.0](https://huggingface.co/inclusionAI/Ring-flash-2.0) Model
 * [2025-09]:🎉 Add [Ring-mini-2.0](https://huggingface.co/inclusionAI/Ring-mini-2.0) Model
 

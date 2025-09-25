@@ -1,0 +1,130 @@
+# Ring-Linear-V2
+<p align="center"><img src="../figures/ant-bailing.png" width="100"/></p>
+
+<p align="center">🤗 <a href="https://huggingface.co/inclusionAI">Hugging Face</a>&nbsp&nbsp | &nbsp&nbsp🤖 <a href="https://modelscope.cn/organization/inclusionAI">ModelScope</a></p>
+
+## News
+* [2025-09]:🎉 Add [Ring-flash-linear-2.0](https://huggingface.co/inclusionAI/Ring-flash-linear-2.0) Model
+* [2025-09]:🎉 Add [Ring-mini-linear-2.0](https://huggingface.co/inclusionAI/Ring-mini-linear-2.0) Model
+
+## Introduction
+We are excited to announce the official open-source release of Ring-linear-V2 series! Building on the success of our [Ling-V2](https://github.com/inclusionAI/Ling-V2) series, these models continues to leverage a powerful hybrid architecture of linear and standard attention, perfectly balancing high performance with superior efficiency. 
+
+## Model Downloads
+
+
+|       **Model**        | **Context Length** |                                                                             **Download**                                                                             |
+|:----------------------:| :----------------: |:--------------------------------------------------------------------------------------------------------------------------------------------------------------------:|
+| Ring-flash-linear-2.0  |        128k         |  [🤗 HuggingFace](https://huggingface.co/inclusionAI/Ring-flash-2.0) <br>[🤖 ModelScope](https://www.modelscope.cn/models/inclusionAI/Ring-flash-linear-2.0)  |
+| Ring-mini-linear-2.0  |        128k         |  [🤗 HuggingFace](https://huggingface.co/inclusionAI/Ring-mini-2.0) <br>[🤖 ModelScope](https://www.modelscope.cn/models/inclusionAI/Ring-mini-linear-2.0)  |
+
+Note: If you are interested in previous version, please visit the past model collections in [Huggingface](https://huggingface.co/inclusionAI) or [ModelScope](https://modelscope.cn/organization/inclusionAI).
+
+## Quickstart
+
+### 🤗 Hugging Face Transformers
+
+Here is a code snippet to show you how to use the chat model with `transformers`:
+
+```python
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+model_name = "inclusionAI/Ring-mini-linear-2.0"
+
+model = AutoModelForCausalLM.from_pretrained(
+    model_name,
+    dtype="auto",
+    device_map="auto",
+    trust_remote_code=True,
+)
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+
+
+prompts = [
+    "Give me a short introduction to large language models."
+]
+input_texts = []
+for prompt in prompts:
+    messages = [
+        {"role": "user", "content": prompt}
+    ]
+    text = tokenizer.apply_chat_template(
+        messages,
+        tokenize=False,
+        add_generation_prompt=True,
+        enable_thinking=True
+    )
+    input_texts.append(text)
+
+print(input_texts)
+
+model_inputs = tokenizer(input_texts, return_tensors="pt", return_token_type_ids=False, padding=True, padding_side='left').to(model.device)
+
+generated_ids = model.generate(
+    **model_inputs,
+    max_new_tokens=8192,
+    do_sample=False,
+)
+generated_ids = [
+    output_ids[len(input_ids):] for input_ids, output_ids in zip(model_inputs.input_ids, generated_ids)
+]
+
+responses = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
+
+print("*" * 30)
+print(responses)
+print("*" * 30)
+```
+
+### SGLang
+
+#### Environment Preparation
+
+We will later submit our model to SGLang official release, now we can prepare the environment following steps:
+```shell
+pip3 install sglang==0.5.2rc0 sgl-kernel==0.3.7.post1
+```
+You can use docker image as well:
+```shell
+docker pull lmsysorg/sglang:v0.5.2rc0-cu126
+```
+Then you should install our sglang whl package:
+```shell
+pip install ./whls/sglang-0.5.2-py3-none-any.whl
+```
+
+#### Run Inference
+
+BF16 and FP8 models are supported by SGLang now, it depends on the dtype of the model in ${MODEL_PATH}. They both share the same command in the following:  
+
+- Start server:
+```shell
+python -m sglang.launch_server \
+    --model-path $MODLE_PATH \
+    --host 0.0.0.0 --port $PORT \
+    --trust-remote-code \
+    --attention-backend fa3
+```
+MTP is supported for base model, and not yet for chat model. You can add parameter `--speculative-algorithm NEXTN`
+to start command.
+
+- Client:
+
+```shell
+curl -s http://localhost:${PORT}/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model": "auto", "messages": [{"role": "user", "content": "What is the capital of France?"}]}'
+```
+
+More usage can be found [here](https://docs.sglang.ai/basic_usage/send_request.html)
+
+
+
+## License
+
+This code repository is licensed under [the MIT License](https://github.com/inclusionAI/Ring-V2/blob/master/LICENSE).
+
+## Citation
+
+If you find our work helpful, feel free to give us a cite.
+
