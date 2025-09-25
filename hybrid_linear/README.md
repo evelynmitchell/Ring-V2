@@ -82,16 +82,66 @@ print(responses)
 print("*" * 30)
 ```
 
+### 🚀 vLLM
+
+#### Environment Preparation
+
+Since the Pull Request (PR) has not been submitted to the vLLM community at this stage, please prepare the environment by following the steps below:
+```shell
+pip install torch==2.7.0 torchvision==0.22.0 
+```
+
+Then you should install our vLLM wheel package:
+```shell
+pip install ./vllm-0.8.5+cuda12_8_gcc10_2_1-cp310-cp310-linux_x86_64.whl --no-deps --force-reinstall
+```
+
+#### Offline Inference
+
+```python
+from transformers import AutoTokenizer
+from vllm import LLM, SamplingParams
+
+tokenizer = AutoTokenizer.from_pretrained("inclusionAI/Ring-mini-linear-2.0")
+
+sampling_params = SamplingParams(temperature=0.7, top_p=0.8, repetition_penalty=1.05, max_tokens=16384)
+
+llm = LLM(model="inclusionAI/Ring-mini-linear-2.0", dtype='bfloat16', enable_prefix_caching=False, max_num_seqs=128)
+prompt = "Give me a short introduction to large language models."
+messages = [
+    {"role": "system", "content": "You are Ling, an assistant created by inclusionAI"},
+    {"role": "user", "content": prompt}
+]
+
+text = tokenizer.apply_chat_template(
+    messages,
+    tokenize=False,
+    add_generation_prompt=True
+)
+outputs = llm.generate([text], sampling_params)
+```
+
+#### Online Inference
+```shell
+vllm serve inclusionAI/Ring-mini-linear-2.0 \
+              --tensor-parallel-size 2 \
+              --pipeline-parallel-size 1 \
+              --gpu-memory-utilization 0.90 \
+              --max-num-seqs 512 \
+              --no-enable-prefix-caching
+```
+
+
 ### 🚀 SGLang
 
 #### Environment Preparation
 
 We will later submit our model to SGLang official release, now we can prepare the environment following steps:
 ```shell
-pip3 install sgl-kernel==0.3.9.post2 vllm==0.10.2
+pip3 install sgl-kernel==0.3.9.post2 vllm==0.10.2 torch==2.8.0 torchvision==0.23.0
 ```
 
-Then you should install our sglang whl package:
+Then you should install our sglang wheel package:
 ```shell
 pip install ./whls/sglang-0.5.2-py3-none-any.whl
 ```
