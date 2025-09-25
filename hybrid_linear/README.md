@@ -143,7 +143,7 @@ pip3 install sgl-kernel==0.3.9.post2 vllm==0.10.2 torch==2.8.0 torchvision==0.23
 
 Then you should install our sglang wheel package:
 ```shell
-pip install ./whls/sglang-0.5.2-py3-none-any.whl
+pip install ./whls/sglang-0.5.2-py3-none-any.whl --no-deps --force-reinstall
 ```
 
 #### Run Inference
