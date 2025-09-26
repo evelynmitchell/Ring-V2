@@ -93,7 +93,7 @@ pip install torch==2.7.0 torchvision==0.22.0
 
 Then you should install our vLLM wheel package:
 ```shell
-pip install ./vllm-0.8.5+cuda12_8_gcc10_2_1-cp310-cp310-linux_x86_64.whl --no-deps --force-reinstall
+pip install ./whls/vllm-0.8.5+cuda12_8_gcc10_2_1-cp310-cp310-linux_x86_64.whl --no-deps --force-reinstall
 ```
 
 #### Offline Inference
@@ -136,7 +136,7 @@ vllm serve inclusionAI/Ring-mini-linear-2.0 \
 
 #### Environment Preparation
 
-We will later submit our model to SGLang official release, now we can prepare the environment following steps:
+We have submitted our [PR](https://github.com/sgl-project/sglang/pull/10917) to SGLang official release and it will be merged later, for now we can prepare the environment following steps:
 ```shell
 pip3 install sgl-kernel==0.3.9.post2 vllm==0.10.2 torch==2.8.0 torchvision==0.23.0
 ```
