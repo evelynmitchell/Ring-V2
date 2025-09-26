@@ -131,7 +131,7 @@ pip install torch==2.7.0 torchvision==0.22.0
 
 Then you should install our vLLM wheel package:
 ```shell
-pip install https://github.com/inclusionAI/Ring-V2/blob/main/hybrid_linear/whls/vllm-0.8.5%2Bcuda12_8_gcc10_2_1-cp310-cp310-linux_x86_64.whl --no-deps --force-reinstall
+pip install https://media.githubusercontent.com/media/inclusionAI/Ring-V2/refs/heads/main/hybrid_linear/whls/vllm-0.8.5%2Bcuda12_8_gcc10_2_1-cp310-cp310-linux_x86_64.whl --no-deps --force-reinstall
 ```
 
 #### Offline Inference
