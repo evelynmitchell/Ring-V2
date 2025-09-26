@@ -1,4 +1,4 @@
-# Ring-Linear-V2
+# Ring-Linear-2.0
 <p align="center"><img src="../figures/ant-bailing.png" width="100"/></p>
 
 <p align="center">🤗 <a href="https://huggingface.co/inclusionAI">Hugging Face</a>&nbsp&nbsp | &nbsp&nbsp🤖 <a href="https://modelscope.cn/organization/inclusionAI">ModelScope</a></p>
@@ -8,7 +8,7 @@
 * [2025-09]:🎉 Add [Ring-mini-linear-2.0](https://huggingface.co/inclusionAI/Ring-mini-linear-2.0) Model
 
 ## Introduction
-We are excited to announce the official open-source release of Ring-linear-V2 series! Building on the success of our [Ling-V2](https://github.com/inclusionAI/Ling-V2) series, these models continues to leverage a powerful hybrid architecture of linear and standard attention, perfectly balancing high performance with superior efficiency. 
+We are excited to announce the official open-source release of Ring linear 2.0 series! Building on the success of our [Ling 2.0](https://github.com/inclusionAI/Ling-V2) series, these models continues to leverage a powerful hybrid architecture of linear and standard attention, perfectly balancing high performance with superior efficiency. 
 
 ## Model Downloads
 
@@ -109,7 +109,6 @@ sampling_params = SamplingParams(temperature=0.6, top_p=1.0, max_tokens=16384)
 llm = LLM(model="inclusionAI/Ring-mini-linear-2.0", dtype='bfloat16', enable_prefix_caching=False, max_num_seqs=128)
 prompt = "Give me a short introduction to large language models."
 messages = [
-    {"role": "system", "content": "You are Ling, an assistant created by inclusionAI"},
     {"role": "user", "content": prompt}
 ]
 
