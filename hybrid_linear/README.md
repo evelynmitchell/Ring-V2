@@ -86,7 +86,7 @@ print("*" * 30)
 
 We have submitted our [PR](https://github.com/sgl-project/sglang/pull/10917) to SGLang official release and it will be merged later, for now we can prepare the environment following steps, firstly install the community version SGLang and required packages:
 ```shell
-pip install sglang==0.5.2 sgl-kernel==0.3.9.post2 vllm==0.10.2 torch==2.8.0 torchvision==0.23.0
+pip install sglang==0.5.2 sgl-kernel==0.3.9.post2 vllm==0.10.2 torch==2.8.0 torchvision==0.23.0 numpy==1.26.4 torchao
 ```
 
 Then you should install our sglang wheel package:
