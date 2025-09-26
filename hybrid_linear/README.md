@@ -11,13 +11,11 @@
 We are excited to announce the official open-source release of Ring linear 2.0 series! Building on the success of our [Ling 2.0](https://github.com/inclusionAI/Ling-V2) series, these models continues to leverage a powerful hybrid architecture of linear and standard attention, perfectly balancing high performance with superior efficiency. 
 
 ## Model Downloads
-<div class="center">
 
 |       **Model**        | **Maximum Supported Length** |                                                                             **Download**                                                                             |
 |:----------------------:| :----------------: |:--------------------------------------------------------------------------------------------------------------------------------------------------------------------:|
 | Ring-flash-linear-2.0  |        128k         |  [🤗 HuggingFace](https://huggingface.co/inclusionAI/Ring-flash-linear-2.0) <br>[🤖 ModelScope](https://www.modelscope.cn/models/inclusionAI/Ring-flash-linear-2.0)  |
 | Ring-mini-linear-2.0  |        512k         |  [🤗 HuggingFace](https://huggingface.co/inclusionAI/Ring-mini-linear-2.0) <br>[🤖 ModelScope](https://www.modelscope.cn/models/inclusionAI/Ring-mini-linear-2.0)  |
-</div>
 Note: If you are interested in previous version, please visit the past model collections in [Huggingface](https://huggingface.co/inclusionAI) or [ModelScope](https://modelscope.cn/organization/inclusionAI).
 
 ## Quickstart
