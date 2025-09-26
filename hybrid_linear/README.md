@@ -82,6 +82,44 @@ print(responses)
 print("*" * 30)
 ```
 
+### 🚀 SGLang
+
+#### Environment Preparation
+
+We have submitted our [PR](https://github.com/sgl-project/sglang/pull/10917) to SGLang official release and it will be merged later, for now we can prepare the environment following steps:
+```shell
+pip install sgl-kernel==0.3.9.post2 vllm==0.10.2 torch==2.8.0 torchvision==0.23.0
+```
+
+Then you should install our sglang wheel package:
+```shell
+pip install http://raw.githubusercontent.com/inclusionAI/Ring-V2/blob/main/hybrid_linear/whls/sglang-0.5.2-py3-none-any.whl --no-deps --force-reinstall
+```
+
+#### Run Inference
+
+BF16 and FP8 models are supported by SGLang now, it depends on the dtype of the model in ${MODEL_PATH}. They both share the same command in the following:  
+
+- Start server:
+```shell
+python -m sglang.launch_server \
+    --model-path <model_path> \
+    --trust-remote-code \
+    --tp-size 1 \
+    --disable-radix-cache \
+    --json-model-override-args "{\"linear_backend\": \"seg_la\"}"
+```
+
+- Client:
+
+```shell
+curl -s http://localhost:${PORT}/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model": "auto", "temperature": 0.6, "messages": [{"role": "user", "content": "Give me a short introduction to large language models."}]}'
+```
+
+More usage can be found [here](https://docs.sglang.ai/basic_usage/send_request.html)
+
 ### 🚀 vLLM
 
 #### Environment Preparation
@@ -129,45 +167,6 @@ vllm serve inclusionAI/Ring-mini-linear-2.0 \
               --max-num-seqs 512 \
               --no-enable-prefix-caching
 ```
-
-
-### 🚀 SGLang
-
-#### Environment Preparation
-
-We have submitted our [PR](https://github.com/sgl-project/sglang/pull/10917) to SGLang official release and it will be merged later, for now we can prepare the environment following steps:
-```shell
-pip install sgl-kernel==0.3.9.post2 vllm==0.10.2 torch==2.8.0 torchvision==0.23.0
-```
-
-Then you should install our sglang wheel package:
-```shell
-pip install http://raw.githubusercontent.com/inclusionAI/Ring-V2/blob/main/hybrid_linear/whls/sglang-0.5.2-py3-none-any.whl --no-deps --force-reinstall
-```
-
-#### Run Inference
-
-BF16 and FP8 models are supported by SGLang now, it depends on the dtype of the model in ${MODEL_PATH}. They both share the same command in the following:  
-
-- Start server:
-```shell
-python -m sglang.launch_server \
-    --model-path <model_path> \
-    --trust-remote-code \
-    --tp-size 1 \
-    --disable-radix-cache \
-    --json-model-override-args "{\"linear_backend\": \"seg_la\"}"
-```
-
-- Client:
-
-```shell
-curl -s http://localhost:${PORT}/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{"model": "auto", "messages": [{"role": "user", "content": "What is the capital of France?"}]}'
-```
-
-More usage can be found [here](https://docs.sglang.ai/basic_usage/send_request.html)
 
 
 
