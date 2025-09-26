@@ -102,7 +102,7 @@ BF16 and FP8 models are supported by SGLang now, it depends on the dtype of the 
 - Start server:
 ```shell
 python -m sglang.launch_server \
-    --model-path <model_path> \
+    --model-path inclusionAI/Ring-mini-linear-2.0 \
     --trust-remote-code \
     --tp-size 1 \
     --disable-radix-cache \
