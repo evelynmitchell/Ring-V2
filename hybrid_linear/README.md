@@ -138,7 +138,7 @@ vllm serve inclusionAI/Ring-mini-linear-2.0 \
 
 We have submitted our [PR](https://github.com/sgl-project/sglang/pull/10917) to SGLang official release and it will be merged later, for now we can prepare the environment following steps:
 ```shell
-pip3 install sgl-kernel==0.3.9.post2 vllm==0.10.2 torch==2.8.0 torchvision==0.23.0
+pip install sgl-kernel==0.3.9.post2 vllm==0.10.2 torch==2.8.0 torchvision==0.23.0
 ```
 
 Then you should install our sglang wheel package:
