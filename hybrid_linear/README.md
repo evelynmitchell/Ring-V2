@@ -13,10 +13,10 @@ We are excited to announce the official open-source release of Ring-linear-V2 se
 ## Model Downloads
 
 
-|       **Model**        | **Context Length** |                                                                             **Download**                                                                             |
+|       **Model**        | **Maximum Supported Length** |                                                                             **Download**                                                                             |
 |:----------------------:| :----------------: |:--------------------------------------------------------------------------------------------------------------------------------------------------------------------:|
 | Ring-flash-linear-2.0  |        128k         |  [🤗 HuggingFace](https://huggingface.co/inclusionAI/Ring-flash-linear-2.0) <br>[🤖 ModelScope](https://www.modelscope.cn/models/inclusionAI/Ring-flash-linear-2.0)  |
-| Ring-mini-linear-2.0  |        128k         |  [🤗 HuggingFace](https://huggingface.co/inclusionAI/Ring-mini-linear-2.0) <br>[🤖 ModelScope](https://www.modelscope.cn/models/inclusionAI/Ring-mini-linear-2.0)  |
+| Ring-mini-linear-2.0  |        512k         |  [🤗 HuggingFace](https://huggingface.co/inclusionAI/Ring-mini-linear-2.0) <br>[🤖 ModelScope](https://www.modelscope.cn/models/inclusionAI/Ring-mini-linear-2.0)  |
 
 Note: If you are interested in previous version, please visit the past model collections in [Huggingface](https://huggingface.co/inclusionAI) or [ModelScope](https://modelscope.cn/organization/inclusionAI).
 
@@ -143,7 +143,7 @@ pip install sgl-kernel==0.3.9.post2 vllm==0.10.2 torch==2.8.0 torchvision==0.23.
 
 Then you should install our sglang wheel package:
 ```shell
-pip install https://github.com/inclusionAI/Ring-V2/blob/main/hybrid_linear/whls/sglang-0.5.2-py3-none-any.whl --no-deps --force-reinstall
+pip install http://raw.githubusercontent.com/inclusionAI/Ring-V2/blob/main/hybrid_linear/whls/sglang-0.5.2-py3-none-any.whl --no-deps --force-reinstall
 ```
 
 #### Run Inference
