@@ -104,7 +104,7 @@ from vllm import LLM, SamplingParams
 
 tokenizer = AutoTokenizer.from_pretrained("inclusionAI/Ring-mini-linear-2.0")
 
-sampling_params = SamplingParams(temperature=0.7, top_p=0.8, repetition_penalty=1.05, max_tokens=16384)
+sampling_params = SamplingParams(temperature=0.6, top_p=1.0, max_tokens=16384)
 
 llm = LLM(model="inclusionAI/Ring-mini-linear-2.0", dtype='bfloat16', enable_prefix_caching=False, max_num_seqs=128)
 prompt = "Give me a short introduction to large language models."
