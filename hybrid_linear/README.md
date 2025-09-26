@@ -141,9 +141,9 @@ from vllm import LLM, SamplingParams
 
 tokenizer = AutoTokenizer.from_pretrained("inclusionAI/Ring-mini-linear-2.0")
 
-sampling_params = SamplingParams(temperature=0.6, top_p=1.0, max_tokens=16384)
+sampling_params = SamplingParams(temperature=0.6, top_p=1.0, max_tokens=8192)
 
-llm = LLM(model="inclusionAI/Ring-mini-linear-2.0", dtype='bfloat16', enable_prefix_caching=False, max_num_seqs=128)
+llm = LLM(model="inclusionAI/Ring-mini-linear-2.0", dtype='bfloat16', enable_prefix_caching=False)
 prompt = "Give me a short introduction to large language models."
 messages = [
     {"role": "user", "content": prompt}
@@ -160,10 +160,8 @@ outputs = llm.generate([text], sampling_params)
 #### Online Inference
 ```shell
 vllm serve inclusionAI/Ring-mini-linear-2.0 \
-              --tensor-parallel-size 2 \
-              --pipeline-parallel-size 1 \
+              --tensor-parallel-size 1 \
               --gpu-memory-utilization 0.90 \
-              --max-num-seqs 512 \
               --no-enable-prefix-caching
 ```
 
