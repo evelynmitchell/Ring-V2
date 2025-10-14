@@ -1,19 +1,21 @@
-# Ring-MoBA-2.0-exp
+# Ring-sparse-2.0-exp
 <p align="center"><img src="../figures/ant-bailing.png" width="100"/></p>
 
 <p align="center">🤗 <a href="https://huggingface.co/inclusionAI">Hugging Face</a>&nbsp&nbsp | &nbsp&nbsp🤖 <a href="https://modelscope.cn/organization/inclusionAI">ModelScope</a></p>
 
 ## News
-* [2025-10]:🎉 Add [Ring-mini-moba-2.0-exp](https://huggingface.co/inclusionAI/Ring-mini-moba-2.0-exp) Model
+* [2025-10]:🎉 Add [Ring-mini-sparse-2.0-exp](https://huggingface.co/inclusionAI/Ring-mini-sparse-2.0-exp) Model
 
 ## Introduction
-We're excited to announce the open-source release of **Ring-mini-moba-2.0-exp**! Building on our [Ring-mini-2.0](https://github.com/inclusionAI/Ling-V2), this new version leverages block-wise sparse attention to achieve superior performance with significantly improved efficiency.
+We're excited to announce the open-source release of **Ring-mini-sparse-2.0-exp**! Building on our [Ring-mini-2.0](https://github.com/inclusionAI/Ling-V2), this new version leverages block-wise sparse attention to achieve superior performance with significantly improved efficiency.
 
 ## Model Downloads
 
+
+
 |       **Model**        | **Maximum Supported Length** |                                                                             **Download**                                                                             |
 |:----------------------:| :----------------: |:--------------------------------------------------------------------------------------------------------------------------------------------------------------------:|
-| Ring-mini-moba-2.0-exp  |        128k         |  [🤗 HuggingFace](https://huggingface.co/inclusionAI/Ring-mini-moba-2.0-exp) <br>[🤖 ModelScope](https://www.modelscope.cn/models/inclusionAI/Ring-mini-moba-2.0-exp)  |
+| Ring-mini-sparse-2.0-exp  |        128k         |  [🤗 HuggingFace](https://huggingface.co/inclusionAI/Ring-mini-sparse-2.0-exp) <br>[🤖 ModelScope](https://www.modelscope.cn/models/inclusionAI/Ring-mini-sparse-2.0-exp)  |
 
 ## Quickstart
 
@@ -29,7 +31,7 @@ Here is a code snippet to show you how to use the chat model with `transformers`
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-model_name = "inclusionAI/Ring-mini-moba-2.0-exp"
+model_name = "inclusionAI/Ring-mini-sparse-2.0-exp"
 
 model = AutoModelForCausalLM.from_pretrained(
     model_name,
@@ -98,7 +100,7 @@ Our model is supported by SGLang now. You can launch the sever with the command 
 python -m sglang.launch_server \
     --model-path <model_path> \
     --trust-remote-code \
-    --tp-size 4 \
+    --tp-size 4 \  ## Currently MoBA with GQA only supports tp size = group size
     --disable-radix-cache \
     --chunked-prefill-size 0 \
     --attention-backend moba
