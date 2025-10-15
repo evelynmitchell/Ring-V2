@@ -92,7 +92,7 @@ pip install sglang==0.5.2 sgl-kernel==0.3.9.post2 vllm==0.10.2 torch==2.8.0 torc
 
 Then you should install our sglang wheel package:
 ```shell
-pip install http://raw.githubusercontent.com/inclusionAI/Ring-V2/blob/main/hybrid_linear/whls/sglang-0.5.2-py3-none-any.whl --no-deps --force-reinstall
+pip install https://media.githubusercontent.com/media/inclusionAI/Ring-V2/refs/heads/main/hybrid_linear/whls/sglang-0.5.2-py3-none-any.whl --no-deps --force-reinstall
 ```
 
 #### Run Inference
