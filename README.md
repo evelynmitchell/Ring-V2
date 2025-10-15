@@ -17,10 +17,10 @@ Ring-V2 is a family of  reasoning MoE LLMs with a range of sizes provided and op
 
 |       **Model**        | **Context Length** |                                                                             **Download**                                                                             |
 |:----------------------:| :----------------: |:--------------------------------------------------------------------------------------------------------------------------------------------------------------------:|
-| Ring-1T  |        128k         |  [🤗 HuggingFace](https://huggingface.co/inclusionAI/Ring-1T) <br>[🤖 ModelScope](https://www.modelscope.cn/models/inclusionAI/Ring-1T)  |
-| Ring-1T-FP8  |        128k         |  [🤗 HuggingFace](https://huggingface.co/inclusionAI/Ring-1T-FP8) <br>[🤖 ModelScope](https://www.modelscope.cn/models/inclusionAI/Ring-1T-FP8)  |
-| Ring-flash-2.0  |        128k         |  [🤗 HuggingFace](https://huggingface.co/inclusionAI/Ring-flash-2.0) <br>[🤖 ModelScope](https://www.modelscope.cn/models/inclusionAI/Ring-flash-2.0)  |
-| Ring-mini-2.0  |        128k         |  [🤗 HuggingFace](https://huggingface.co/inclusionAI/Ring-mini-2.0) <br>[🤖 ModelScope](https://www.modelscope.cn/models/inclusionAI/Ring-mini-2.0)  |
+| Ring-1T  |        64K -> 128K (YaRN)	         |  [🤗 HuggingFace](https://huggingface.co/inclusionAI/Ring-1T) <br>[🤖 ModelScope](https://www.modelscope.cn/models/inclusionAI/Ring-1T)  |
+| Ring-1T-FP8  |        64K -> 128K (YaRN)	         |  [🤗 HuggingFace](https://huggingface.co/inclusionAI/Ring-1T-FP8) <br>[🤖 ModelScope](https://www.modelscope.cn/models/inclusionAI/Ring-1T-FP8)  |
+| Ring-flash-2.0  |        32K -> 128K (YaRN)	         |  [🤗 HuggingFace](https://huggingface.co/inclusionAI/Ring-flash-2.0) <br>[🤖 ModelScope](https://www.modelscope.cn/models/inclusionAI/Ring-flash-2.0)  |
+| Ring-mini-2.0  |        32K -> 128K (YaRN)	         |  [🤗 HuggingFace](https://huggingface.co/inclusionAI/Ring-mini-2.0) <br>[🤖 ModelScope](https://www.modelscope.cn/models/inclusionAI/Ring-mini-2.0)  |
 
 Note: If you are interested in previous version, please visit the past model collections in [Huggingface](https://huggingface.co/inclusionAI) or [ModelScope](https://modelscope.cn/organization/inclusionAI).
 
