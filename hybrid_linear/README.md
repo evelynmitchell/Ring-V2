@@ -1,9 +1,11 @@
 # Ring-Linear-2.0
 <p align="center"><img src="../figures/ant-bailing.png" width="100"/></p>
 
-<p align="center">🤗 <a href="https://huggingface.co/inclusionAI">Hugging Face</a>&nbsp&nbsp | &nbsp&nbsp🤖 <a href="https://modelscope.cn/organization/inclusionAI">ModelScope</a></p>
+<p align="center"><a href="https://arxiv.org/abs/2510.19338">📖 Technical Report</a>&nbsp&nbsp |  &nbsp&nbsp🤗 <a href="https://huggingface.co/inclusionAI">Hugging Face</a>&nbsp&nbsp | &nbsp&nbsp🤖 <a href="https://modelscope.cn/organization/inclusionAI">ModelScope</a></p>
 
 ## News
+* [2025-10]:🎉 Add [Technical Report ](https://arxiv.org/abs/2510.19338) 
+* [2025-10]:🎉 Add [Ring-flash-linear-2.0-128k](https://huggingface.co/inclusionAI/Ring-flash-linear-2.0-128k) Model
 * [2025-09]:🎉 Add [Ring-flash-linear-2.0](https://huggingface.co/inclusionAI/Ring-flash-linear-2.0) Model
 * [2025-09]:🎉 Add [Ring-mini-linear-2.0](https://huggingface.co/inclusionAI/Ring-mini-linear-2.0) Model
 
@@ -174,4 +176,14 @@ This code repository is licensed under [the MIT License](https://github.com/incl
 ## Citation
 
 If you find our work helpful, feel free to give us a cite.
-
+```
+@misc{lingteam2025attentionmattersefficienthybrid,
+      title={Every Attention Matters: An Efficient Hybrid Architecture for Long-Context Reasoning}, 
+      author={Ling Team and Bin Han and Caizhi Tang and Chen Liang and Donghao Zhang and Fan Yuan and Feng Zhu and Jie Gao and Jingyu Hu and Longfei Li and Meng Li and Mingyang Zhang and Peijie Jiang and Peng Jiao and Qian Zhao and Qingyuan Yang and Wenbo Shen and Xinxing Yang and Yalin Zhang and Yankun Ren and Yao Zhao and Yibo Cao and Yixuan Sun and Yue Zhang and Yuchen Fang and Zibin Lin and Zixuan Cheng and Jun Zhou},
+      year={2025},
+      eprint={2510.19338},
+      archivePrefix={arXiv},
+      primaryClass={cs.LG},
+      url={https://arxiv.org/abs/2510.19338}, 
+}
+```
